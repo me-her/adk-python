@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import base64
 from functools import cached_property
 import logging
 import os
@@ -45,7 +46,7 @@ __all__ = ["Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
-MAX_TOKEN = 1024
+MAX_TOKEN = 8192
 
 
 class ClaudeRequest(BaseModel):
@@ -105,15 +106,53 @@ def part_to_message_block(
         content=content,
         is_error=False,
     )
-  raise NotImplementedError("Not supported yet.")
+  if (
+      part.inline_data
+      and part.inline_data.mime_type
+      and part.inline_data.mime_type.startswith("image")
+  ):
+    data = base64.b64encode(part.inline_data.data).decode()
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=dict(
+            type="base64", media_type=part.inline_data.mime_type, data=data
+        ),
+    )
+  if part.executable_code:
+    return anthropic_types.TextBlockParam(
+        type="text",
+        text="Code:```python\n" + part.executable_code.code + "\n```",
+        # language=part.executable_code.language,
+    )
+  if part.code_execution_result:
+    return anthropic_types.TextBlockParam(
+        text="Execution Result:```code_output\n"
+        + part.code_execution_result.output
+        + "\n```",
+        type="text",
+    )
+
+  raise NotImplementedError(f"Not supported yet: {part}")
 
 
 def content_to_message_param(
     content: types.Content,
 ) -> anthropic_types.MessageParam:
+  message_block = []
+  for part in content.parts or []:
+    # Image data is not supported in Claude for model turns.
+    if (
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("image")
+    ):
+      continue
+
+    message_block.append(part_to_message_block(part))
+
   return {
       "role": to_claude_role(content.role),
-      "content": [part_to_message_block(part) for part in content.parts or []],
+      "content": message_block,
   }
 
 
