@@ -84,10 +84,20 @@ from .utils import envs
 from .utils import evals
 from .utils.agent_loader import AgentLoader
 
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_should_reload_agents = [False]
 
+class AgentChangeEventHandler(FileSystemEventHandler):
+  def on_modified(self, event):
+    if not (event.src_path.endswith(".py") or event.src_path.endswith(".yaml")):
+      return
+    logger.info("Change detected in agents directory: %s", event.src_path)
+    _should_reload_agents[0] = True
 
 class ApiServerSpanExporter(export.SpanExporter):
 
@@ -205,8 +215,16 @@ def get_fast_api_app(
     host: str = "127.0.0.1",
     port: int = 8000,
     trace_to_cloud: bool = False,
+    watch_agents: bool = False,
     lifespan: Optional[Lifespan[FastAPI]] = None,
 ) -> FastAPI:
+  # Set up a file system watcher to detect changes in the agents directory.
+  observer = Observer()
+  if watch_agents:
+    event_handler = AgentChangeEventHandler()
+    observer.schedule(event_handler, agents_dir, recursive=True)
+    observer.start()
+
   # InMemory tracing dict.
   trace_dict: dict[str, Any] = {}
   session_trace_dict: dict[str, Any] = {}
@@ -235,7 +253,6 @@ def get_fast_api_app(
 
   @asynccontextmanager
   async def internal_lifespan(app: FastAPI):
-
     try:
       if lifespan:
         async with lifespan(app) as lifespan_context:
@@ -243,6 +260,9 @@ def get_fast_api_app(
       else:
         yield
     finally:
+      if watch_agents:
+        observer.stop()
+        observer.join()
       # Create tasks for all runner closures to run concurrently
       await cleanup.close_runners(list(runner_dict.values()))
 
@@ -503,7 +523,7 @@ def get_fast_api_app(
 
     # Populate the session with initial session state.
     initial_session_state = create_empty_state(
-        agent_loader.load_agent(app_name)
+        agent_loader.load_agent(app_name, _should_reload_agents)
     )
 
     new_eval_case = EvalCase(
@@ -617,7 +637,7 @@ def get_fast_api_app(
       logger.info("Eval ids to run list is empty. We will run all eval cases.")
       eval_set_to_evals = {eval_set_id: eval_set.eval_cases}
 
-    root_agent = agent_loader.load_agent(app_name)
+    root_agent = agent_loader.load_agent(app_name, _should_reload_agents)
     run_eval_results = []
     eval_case_results = []
     try:
@@ -846,7 +866,7 @@ def get_fast_api_app(
 
     function_calls = event.get_function_calls()
     function_responses = event.get_function_responses()
-    root_agent = agent_loader.load_agent(app_name)
+    root_agent = agent_loader.load_agent(app_name, _should_reload_agents)
     dot_graph = None
     if function_calls:
       function_call_highlights = []
@@ -947,10 +967,13 @@ def get_fast_api_app(
 
   async def _get_runner_async(app_name: str) -> Runner:
     """Returns the runner for the given app."""
+    if _should_reload_agents[0]:
+      runner_dict.pop(app_name, None)
+
     envs.load_dotenv_for_agent(os.path.basename(app_name), agents_dir)
     if app_name in runner_dict:
       return runner_dict[app_name]
-    root_agent = agent_loader.load_agent(app_name)
+    root_agent = agent_loader.load_agent(app_name, _should_reload_agents)
     runner = Runner(
         app_name=app_name,
         agent=root_agent,

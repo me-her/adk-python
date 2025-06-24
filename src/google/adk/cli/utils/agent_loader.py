@@ -154,8 +154,21 @@ class AgentLoader:
         " exposed."
     )
 
-  def load_agent(self, agent_name: str) -> BaseAgent:
+  def load_agent(self, agent_name: str, should_reload_agents: Optional[list[bool]] = [False]) -> BaseAgent:
     """Load an agent module (with caching & .env) and return its root_agent."""
+    if should_reload_agents[0]:
+      # Clear module cache for the agent and its submodules
+      keys_to_delete = [
+          module_name
+          for module_name in sys.modules
+          if module_name == agent_name or module_name.startswith(f"{agent_name}.")
+      ]
+      for key in keys_to_delete:
+        logger.debug("Deleting module %s", key)
+        del sys.modules[key]
+      self._agent_cache.clear()
+      should_reload_agents[0] = False
+
     if agent_name in self._agent_cache:
       logger.debug("Returning cached agent for %s (async)", agent_name)
       return self._agent_cache[agent_name]

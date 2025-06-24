@@ -600,6 +600,14 @@ def fast_api_common_options():
     default="127.0.0.1",
     show_default=True,
 )
+@click.option(
+    "--watch_agents",
+    type=bool,
+    help="Optional. Whether to enable live reload for agents changes.",
+    is_flag=True,
+    default=False,
+    show_default=True,
+)
 @fast_api_common_options()
 @adk_services_options()
 @deprecated_adk_services_options()
@@ -625,6 +633,7 @@ def cli_web(
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
+    watch_agents: bool = False,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -674,6 +683,7 @@ def cli_web(
       a2a=a2a,
       host=host,
       port=port,
+      watch_agents=watch_agents,
   )
   config = uvicorn.Config(
       app,
@@ -692,6 +702,14 @@ def cli_web(
     type=str,
     help="Optional. The binding host of the server",
     default="127.0.0.1",
+    show_default=True,
+)
+@click.option(
+    "--watch_agents",
+    type=bool,
+    help="Optional. Whether to enable live reload for agents changes.",
+    is_flag=True,
+    default=False,
     show_default=True,
 )
 @fast_api_common_options()
@@ -721,6 +739,7 @@ def cli_api_server(
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
+    watch_agents: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
@@ -748,6 +767,7 @@ def cli_api_server(
           a2a=a2a,
           host=host,
           port=port,
+          watch_agents=watch_agents,
       ),
       host=host,
       port=port,
