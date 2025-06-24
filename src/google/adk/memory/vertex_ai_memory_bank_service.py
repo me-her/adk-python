@@ -64,7 +64,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     events = []
     for event in session.events:
-      if event.content and event.content.parts:
+      if should_filter_event(event.content):
+        continue
+      if event.content:
         events.append({
             'content': event.content.model_dump(exclude_none=True, mode='json')
         })
@@ -145,3 +147,16 @@ def _convert_api_response(api_response):
   if hasattr(api_response, 'body'):
     return json.loads(api_response.body)
   return api_response
+
+
+def should_filter_event(content: genai.types.Content) -> bool:
+  if not content or not content.parts:
+    return True
+  for part in content.parts:
+    if (
+        not part.function_call
+        and not part.function_response
+        and not part.thought_signature
+    ):
+      return False
+  return True
