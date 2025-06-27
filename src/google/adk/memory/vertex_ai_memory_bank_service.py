@@ -68,6 +68,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         events.append({
             'content': event.content.model_dump(exclude_none=True, mode='json')
         })
+
     request_dict = {
         'direct_contents_source': {
             'events': events,
@@ -79,11 +80,16 @@ class VertexAiMemoryBankService(BaseMemoryService):
     }
 
     if events:
-      api_response = await api_client.async_request(
-          http_method='POST',
-          path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
-          request_dict=request_dict,
-      )
+      try:
+        api_response = await api_client.async_request(
+            http_method='POST',
+            path=f'reasoningEngines/{self._agent_engine_id}/memories:generate',
+            request_dict=request_dict,
+        )
+      except Exception as e:
+        raise ValueError(f'Error adding session to memory: {e}') from e
+
+      api_response = _convert_api_response(api_response)
       logger.info(f'Generate memory response: {api_response}')
     else:
       logger.info('No events to add to memory.')
@@ -92,21 +98,25 @@ class VertexAiMemoryBankService(BaseMemoryService):
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
     api_client = self._get_api_client()
 
-    api_response = await api_client.async_request(
-        http_method='POST',
-        path=f'reasoningEngines/{self._agent_engine_id}/memories:retrieve',
-        request_dict={
-            'scope': {
-                'app_name': app_name,
-                'user_id': user_id,
-            },
-            'similarity_search_params': {
-                'search_query': query,
-            },
-        },
-    )
+    try:
+      api_response = await api_client.async_request(
+          http_method='POST',
+          path=f'reasoningEngines/{self._agent_engine_id}/memories:retrieve',
+          request_dict={
+              'scope': {
+                  'app_name': app_name,
+                  'user_id': user_id,
+              },
+              'similarity_search_params': {
+                  'search_query': query,
+              },
+          },
+      )
+    except Exception as e:
+      raise ValueError(f'Error retrieving memory: {e}') from e
+
     api_response = _convert_api_response(api_response)
-    logger.info(f'Search memory response: {api_response}')
+    logger.info(f'Retrieve memory response: {api_response}')
 
     if not api_response or not api_response.get('retrievedMemories', None):
       return SearchMemoryResponse()

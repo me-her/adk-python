@@ -78,6 +78,7 @@ class VertexAiSessionService(BaseSessionService):
           'User-provided Session id is not supported for'
           ' VertexAISessionService.'
       )
+
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     api_client = self._get_api_client()
 
@@ -85,11 +86,15 @@ class VertexAiSessionService(BaseSessionService):
     if state:
       session_json_dict['session_state'] = state
 
-    api_response = await api_client.async_request(
-        http_method='POST',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions',
-        request_dict=session_json_dict,
-    )
+    try:
+      api_response = await api_client.async_request(
+          http_method='POST',
+          path=f'reasoningEngines/{reasoning_engine_id}/sessions',
+          request_dict=session_json_dict,
+      )
+    except Exception as e:
+      raise ValueError(f'Error creating session: {e}') from e
+
     api_response = _convert_api_response(api_response)
     logger.info(f'Create Session response {api_response}')
 
@@ -288,8 +293,7 @@ class VertexAiSessionService(BaseSessionService):
           request_dict={},
       )
     except Exception as e:
-      logger.error(f'Error deleting session {session_id}: {e}')
-      raise e
+      raise ValueError(f'Error deleting session: {e}') from e
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -298,11 +302,16 @@ class VertexAiSessionService(BaseSessionService):
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
     api_client = self._get_api_client()
-    await api_client.async_request(
-        http_method='POST',
-        path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
-        request_dict=_convert_event_to_json(event),
-    )
+
+    try:
+      await api_client.async_request(
+          http_method='POST',
+          path=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}:appendEvent',
+          request_dict=_convert_event_to_json(event),
+      )
+    except Exception as e:
+      raise ValueError(f'Error appending event: {e}') from e
+
     return event
 
   def _get_reasoning_engine_id(self, app_name: str):
