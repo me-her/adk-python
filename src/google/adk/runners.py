@@ -20,6 +20,7 @@ import queue
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
+from typing import Union
 import warnings
 
 from google.genai import types
