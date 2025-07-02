@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import Mapping
 from typing import Union
 
 from google.genai import types
@@ -58,6 +63,19 @@ class LangGraphAgent(BaseAgent):
   graph: CompiledGraph
 
   instruction: str = ''
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> LangGraphAgent:
+    """Creates a copy of this LangGraphAgent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new LangGraphAgent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    return cast(LangGraphAgent, super().clone(update))
 
   @override
   async def _run_async_impl(

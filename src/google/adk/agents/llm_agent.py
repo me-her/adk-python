@@ -20,7 +20,9 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import Literal
+from typing import Mapping
 from typing import Optional
 from typing import Union
 
@@ -267,6 +269,19 @@ class LlmAgent(BaseAgent):
     When present, the returned dict will be used as tool result.
   """
   # Callbacks - End
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> LlmAgent:
+    """Creates a copy of this LlmAgent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new LlmAgent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    return cast(LlmAgent, super().clone(update))
 
   @override
   async def _run_async_impl(

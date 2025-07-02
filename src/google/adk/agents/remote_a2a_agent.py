@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import Mapping
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -48,6 +50,7 @@ except ImportError as e:
 
 from google.genai import types as genai_types
 import httpx
+from typing_extensions import override
 
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
@@ -150,6 +153,19 @@ class RemoteA2aAgent(BaseAgent):
           "agent_card must be AgentCard, URL string, or file path string, "
           f"got {type(agent_card)}"
       )
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> "RemoteA2aAgent":
+    """Creates a copy of this RemoteA2aAgent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new RemoteA2aAgent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    return cast(RemoteA2aAgent, super().clone(update))
 
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""

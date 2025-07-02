@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import Mapping
 
 from typing_extensions import override
 
@@ -28,6 +31,19 @@ from .llm_agent import LlmAgent
 
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence."""
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> SequentialAgent:
+    """Creates a copy of this SequentialAgent instance.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new SequentialAgent instance with identical configuration as the original
+      agent except for the fields specified in the update.
+    """
+    return cast(SequentialAgent, super().clone(update))
 
   @override
   async def _run_async_impl(
