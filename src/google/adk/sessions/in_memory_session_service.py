@@ -237,8 +237,7 @@ class InMemorySessionService(BaseSessionService):
       
       # Determine whether to include state
       if config and config.include_state:
-        # Merge states for this session
-        copied_session = self._merge_state(app_name, user_id, copied_session)
+        copied_session.state = session.state
       else:
         copied_session.state = {}
       
