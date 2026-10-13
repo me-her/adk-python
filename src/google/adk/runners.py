@@ -1807,22 +1807,9 @@ class Runner:
     """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
     from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
 
-    if (
-        not isinstance(self.agent, LlmAgent)
-        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
-    ):
-      return False
-    remote_a2a_agent_class: tuple[Any, ...] = ()
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_class = (RemoteA2aAgent,)
-    except ImportError:
-      pass
-    return not any(
-        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == _AgentMode.TASK
-        for sa in self.agent.sub_agents or []
+    return (
+        isinstance(self.agent, LlmAgent)
+        and (self.agent.mode or _AgentMode.CHAT) == _AgentMode.CHAT
     )
 
   def _find_agent_to_run(
@@ -1837,6 +1824,9 @@ class Runner:
     - The root agent.
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
+
+    An agent inside a task delegation is replaced by the agent that delegated
+    it.
 
     Args:
         session: The session to find the agent for.
