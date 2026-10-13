@@ -1401,15 +1401,23 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      rewind_before_invocation_id: The invocation ID to rewind to before.
+      run_config: Retained for backward compatibility. ``get_session_config``
+        is ignored because rewinds must replay state and artifact deltas from
+        the start of the session history.
+
     Raises:
       InvocationNotFoundError: If rewind_before_invocation_id does not match
         any event in the session.
     """
-    run_config = run_config or RunConfig()
+    if run_config and run_config.get_session_config:
+      logger.warning('rewind_async ignores run_config.get_session_config')
     session = await self._get_or_create_session(
         user_id=user_id,
         session_id=session_id,
-        get_session_config=run_config.get_session_config,
     )
     from .sessions import _rewind_utils
 

@@ -2796,36 +2796,6 @@ async def test_run_live_passes_get_session_config():
 
 
 @pytest.mark.asyncio
-async def test_rewind_async_passes_get_session_config():
-  """rewind_async should forward RunConfig.get_session_config to get_session."""
-  from google.adk.sessions.base_session_service import GetSessionConfig
-
-  session_service = InMemorySessionService()
-
-  runner = Runner(
-      app_name=TEST_APP_ID,
-      agent=MockAgent("test_agent"),
-      session_service=session_service,
-      artifact_service=InMemoryArtifactService(),
-      auto_create_session=True,
-  )
-
-  config = RunConfig(
-      get_session_config=GetSessionConfig(num_recent_events=5),
-  )
-
-  # rewind_async on a fresh session will raise because the invocation_id
-  # doesn't exist, but it demonstrates that the config path works.
-  with pytest.raises(ValueError, match=r"Invocation ID not found"):
-    await runner.rewind_async(
-        user_id=TEST_USER_ID,
-        session_id="new_session",
-        rewind_before_invocation_id="inv_missing",
-        run_config=config,
-    )
-
-
-@pytest.mark.asyncio
 async def test_run_debug_passes_get_session_config():
   """run_debug should forward RunConfig.get_session_config to get_session."""
   from google.adk.sessions.base_session_service import GetSessionConfig
