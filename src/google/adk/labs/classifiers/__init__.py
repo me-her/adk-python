@@ -15,6 +15,7 @@
 """Models that answer typed questions with probability distributions."""
 
 from ._base_classifier import BaseClassifier
+from ._classifier_node import ClassifierNode
 from ._types import Answer
 from ._types import Binary
 from ._types import BinaryAnswer
@@ -34,6 +35,7 @@ __all__ = [
     'BinaryAnswer',
     'Choice',
     'ChoiceAnswer',
+    'ClassifierNode',
     'ClassifierInput',
     'ClassifierResponse',
     'JSONContent',
