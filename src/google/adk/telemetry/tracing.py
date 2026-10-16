@@ -49,7 +49,9 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ARGUMENTS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_RESULT
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
@@ -86,6 +88,8 @@ from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
 from ._finish_reason import is_reported_finish_reason
+from ._schema_version import resolve_schema_version
+from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -316,22 +320,25 @@ def trace_tool_call(
     destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
     span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
-  # Setting empty llm request and response (as UI expect these) while not
-  # applicable for tool_response.
-  span.set_attribute("gcp.vertex.agent.llm_request", "{}")
-  span.set_attribute("gcp.vertex.agent.llm_response", "{}")
+  legacy = resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED
+  if legacy:
+    # Setting empty llm request and response (as UI expect these) while not
+    # applicable for tool_response.
+    span.set_attribute("gcp.vertex.agent.llm_request", "{}")
+    span.set_attribute("gcp.vertex.agent.llm_response", "{}")
 
-  if telemetry_config.should_add_content_to_legacy_spans:
-    span.set_attribute(
-        "gcp.vertex.agent.tool_call_args",
-        safe_json_serialize(args),
-    )
-  else:
-    span.set_attribute("gcp.vertex.agent.tool_call_args", "{}")
+    if telemetry_config.should_add_content_to_legacy_spans:
+      span.set_attribute(
+          "gcp.vertex.agent.tool_call_args",
+          safe_json_serialize(args),
+      )
+    else:
+      span.set_attribute("gcp.vertex.agent.tool_call_args", "{}")
 
   # Tracing tool response
   tool_call_id = "<not specified>"
   tool_response = "<not specified>"
+  has_response = False
   if (
       function_response_event is not None
       and function_response_event.content is not None
@@ -344,6 +351,7 @@ def trace_tool_call(
         tool_call_id = function_response.id
       if function_response.response is not None:
         tool_response = function_response.response
+        has_response = True
 
   span.set_attribute(GEN_AI_TOOL_CALL_ID, tool_call_id)
 
@@ -351,20 +359,34 @@ def trace_tool_call(
     tool_response = {"result": tool_response}
   if function_response_event is not None:
     span.set_attribute("gcp.vertex.agent.event_id", function_response_event.id)
-  if telemetry_config.should_add_content_to_legacy_spans:
-    try:
-      tool_response_json = safe_json_serialize(
-          _redact_credential_secrets(
-              to_jsonable_python(
-                  tool_response, fallback=lambda _: "<not serializable>"
-              )
-          )
+  if legacy:
+    if telemetry_config.should_add_content_to_legacy_spans:
+      span.set_attribute(
+          "gcp.vertex.agent.tool_response",
+          _serialize_tool_response(tool_response),
       )
-    except Exception:  # pylint: disable=broad-exception-caught
-      tool_response_json = "<not serializable>"
-    span.set_attribute("gcp.vertex.agent.tool_response", tool_response_json)
-  else:
-    span.set_attribute("gcp.vertex.agent.tool_response", "{}")
+    else:
+      span.set_attribute("gcp.vertex.agent.tool_response", "{}")
+  elif telemetry_config.should_add_content_to_experimental_spans:
+    span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, safe_json_serialize(args))
+    if has_response:
+      span.set_attribute(
+          GEN_AI_TOOL_CALL_RESULT, _serialize_tool_response(tool_response)
+      )
+
+
+def _serialize_tool_response(tool_response: object) -> str:
+  """Serializes a tool response with credential secrets redacted."""
+  try:
+    return safe_json_serialize(
+        _redact_credential_secrets(
+            to_jsonable_python(
+                tool_response, fallback=lambda _: "<not serializable>"
+            )
+        )
+    )
+  except Exception:  # pylint: disable=broad-exception-caught
+    return "<not serializable>"
 
 
 def _should_report_mcp_http_exchanges() -> bool:
@@ -551,6 +573,11 @@ def trace_merged_tool_calls(
   span.set_attribute(GEN_AI_TOOL_NAME, "(merged tools)")
   span.set_attribute(GEN_AI_TOOL_DESCRIPTION, "(merged tools)")
   span.set_attribute(GEN_AI_TOOL_CALL_ID, response_event_id)
+
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    # Each merged call has its own `execute_tool` span carrying its content.
+    span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
+    return
 
   # Pending cleanup: drop these placeholder attributes once no downstream
   # consumer reads them.

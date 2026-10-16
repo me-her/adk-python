@@ -185,6 +185,15 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),
+    # With content on, the failed call reports its arguments but no result.
+    FunctionalTestCase(
+        test_id="tool-error-valueerror-span-only-schema-v2",
+        scenario="agent",
+        semconv_opt_in=None,
+        capture_content="span_only",
+        schema_version=2,
+        tool_exception=TOOL_ERROR,
+    ),
     # The same turn streamed, its answer arriving in two chunks that leave
     # `partial` unset: one inference span per turn either way, and a completion
     # log holding the whole answer rather than whichever chunk arrived first.

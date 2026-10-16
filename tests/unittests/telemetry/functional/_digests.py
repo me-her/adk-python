@@ -71,6 +71,8 @@ JSON_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.output.messages",
     "gen_ai.system_instructions",
     "gen_ai.tool.definitions",
+    "gen_ai.tool.call.arguments",
+    "gen_ai.tool.call.result",
 })
 
 

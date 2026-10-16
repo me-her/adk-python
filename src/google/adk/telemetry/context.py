@@ -325,7 +325,7 @@ class TelemetryConfig(BaseModel):
 
   @property
   def should_add_content_to_experimental_spans(self) -> bool:
-    """Whether content goes on the experimental inference span.
+    """Whether content goes on semconv spans (inference, and v2 tool spans).
 
     OTel-spec routing: true for the span-bearing modes (``SPAN_ONLY`` /
     ``SPAN_AND_EVENT``). Distinct from the legacy ADK knob in

@@ -102,12 +102,8 @@
               "gen_ai.tool.type": "LoadSkillTool",
               "gen_ai.agent.name": "some_root_agent",
               "error.type": "REGISTRY_ERROR",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
-              "gcp.vertex.agent.tool_call_args": "{}",
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.tool_response": "{}",
               "gen_ai.skill.name": "nonexistent-skill"
             },
             "status": "ERROR",

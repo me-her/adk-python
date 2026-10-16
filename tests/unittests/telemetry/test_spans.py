@@ -1147,6 +1147,7 @@ def test_trace_mcp_http_exchange_sets_error_type_on_failure(mock_otel_logger):
 def test_trace_merged_tool_calls_sets_correct_attributes(
     monkeypatch, mock_span_fixture, mock_event_fixture
 ):
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
@@ -1206,10 +1207,48 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   assert 'merged_details' in recorded_response
 
 
+def test_trace_merged_tool_calls_records_no_content_under_schema_v2(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '2')
+  monkeypatch.setenv(
+      'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT', 'SPAN_ONLY'
+  )
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_003',
+                  name='test_function_1',
+                  response={'data': 'merged_details'},
+              )
+          ),
+      ],
+  )
+
+  trace_merged_tool_calls(
+      response_event_id='merged_evt_id_001',
+      function_response_event=mock_event_fixture,
+  )
+
+  assert mock_span_fixture.set_attribute.call_args_list == [
+      mock.call('gen_ai.operation.name', 'execute_tool'),
+      mock.call('gen_ai.tool.name', '(merged tools)'),
+      mock.call('gen_ai.tool.description', '(merged tools)'),
+      mock.call('gen_ai.tool.call.id', 'merged_evt_id_001'),
+      mock.call('gcp.vertex.agent.event_id', 'merged_evt_id_001'),
+  ]
+
+
 def test_trace_merged_tool_calls_omits_event_actions(
     monkeypatch, mock_span_fixture, mock_event_fixture
 ):
   """Only the responses are recorded, not the state a tool wrote."""
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
