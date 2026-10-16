@@ -114,6 +114,18 @@
       {
         "path": [
           "attributes",
+          "gen_ai.output.messages"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": [],
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records an empty output-message list for a response it never got."
+      },
+      {
+        "path": [
+          "attributes",
           "gen_ai.output.messages",
           "finish_reason"
         ],
@@ -405,14 +417,50 @@
       {
         "path": [
           "attributes",
+          "gen_ai.usage.input_tokens"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": 0,
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records zero input tokens for a response it never got."
+      },
+      {
+        "path": [
+          "attributes",
           "gen_ai.response.finish_reasons"
         ],
         "example_native_instrumentation_value": {
           "missing_on_this_side": true
         },
-        "example_otel_instrumentation_value": "unspecified",
+        "example_otel_instrumentation_value": [],
         "kind": "otel_bug",
-        "reason": "The instrumentor publishes the unset proto3 zero value as the reason `unspecified`, which is not one the semconv defines. ADK omits the attribute until a reason is actually reported."
+        "reason": "The instrumentor publishes the unset proto3 zero value as the reason `unspecified`, which is not one the semconv defines, and an empty list on a call that failed. ADK omits the attribute until a reason is actually reported."
+      },
+      {
+        "path": [
+          "attributes",
+          "error.type"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "ValueError",
+        "kind": "adk_bug",
+        "reason": "ADK leaves `error.type` off the completion details of a failed call, as it does off the inference span."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.output.messages"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": [],
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records an empty output-message list for a response it never got."
       },
       {
         "path": [
@@ -424,6 +472,63 @@
         "example_otel_instrumentation_value": "error",
         "kind": "otel_bug",
         "reason": "A chunk that has not finished has no reason to give, and the semconv makes the field required, so ADK writes it empty. The instrumentor maps the unset proto3 zero value to `error`, reporting every chunk of a healthy turn as a failed generation."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.input.messages"
+        ],
+        "example_native_instrumentation_value": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "content": "<elided>",
+                "type": "text"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "parts": [
+              {
+                "content": "<elided>",
+                "type": "text"
+              }
+            ]
+          }
+        ],
+        "example_otel_instrumentation_value": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "content": "<elided>",
+                "type": "text"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "parts": [
+              {
+                "content": "<elided>",
+                "type": "text"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "parts": [
+              {
+                "content": "<elided>",
+                "type": "text"
+              }
+            ]
+          }
+        ],
+        "kind": "adk_bug",
+        "reason": "ADK logs one user message fewer than the model receives. If a request ends on a model turn, `Gemini.generate_content_async` appends a user turn (`Continue processing previous requests as instructed. ...`) before sending it, in `BaseLlm._maybe_append_user_content`. ADK logs the request's messages when it opens the inference span, before that append, so its logs miss the turn; the OTel instrumentor logs the request as sent, so it has it. In the token-threshold compaction cases the first request ends on a model turn: compaction keeps no events after its summary (`event_retention_size=0`), and a summary is a model turn."
       }
     ]
   },

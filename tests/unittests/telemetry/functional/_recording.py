@@ -75,6 +75,7 @@ from .scenarios.telemetry_setup import TelemetryProviders
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
+  from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk.trace import ReadableSpan
 
 
@@ -165,6 +166,7 @@ class Recording:
   instrumentation: InferenceInstrumentation
   digest: TelemetryDigest
   spans: tuple[ReadableSpan, ...]
+  logs: tuple[ReadableLogRecord, ...]
   events: list[Event]
 
 
@@ -210,13 +212,16 @@ async def record_case(
 
 
 async def _record(
-    case: FunctionalTestCase, instrumentation: InferenceInstrumentation
+    case: FunctionalTestCase,
+    instrumentation: InferenceInstrumentation,
+    *,
+    log_exporter: InMemoryLogRecordExporter | None = None,
 ) -> Recording:
   with pytest.MonkeyPatch.context() as monkeypatch:
     case.apply_env(monkeypatch)
 
     span_exporter = InMemorySpanExporter()
-    log_exporter = InMemoryLogRecordExporter()
+    log_exporter = log_exporter or InMemoryLogRecordExporter()
     metric_reader = InMemoryMetricReader()
     providers = install_telemetry(
         monkeypatch, span_exporter, log_exporter, metric_reader
@@ -233,14 +238,14 @@ async def _record(
         )
 
     spans = span_exporter.get_finished_spans()
+    logs = log_exporter.get_finished_logs()
     return Recording(
         instrumentation=instrumentation,
         digest=TelemetryDigest.build(
-            spans,
-            log_exporter.get_finished_logs(),
-            metric_reader.get_metrics_data(),
+            spans, logs, metric_reader.get_metrics_data()
         ),
         spans=spans,
+        logs=logs,
         events=events,
     )
 

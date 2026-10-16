@@ -1587,7 +1587,9 @@ async def test_record_llm_response_keeps_every_response_in_arrival_order(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
   first = _llm_response(partial=True, finish_reason=None)
   second = _llm_response()
 
@@ -1609,7 +1611,9 @@ async def test_record_llm_response_traces_the_result_onto_the_carried_span(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
 
   with tracing.tracer.start_as_current_span("test_span") as span:
     tel_ctx.span = span

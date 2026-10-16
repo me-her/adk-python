@@ -175,6 +175,15 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         model_exception=ValueError("boom"),
     ),
+    # Opted in, the failed call also reports its completion details.
+    FunctionalTestCase(
+        test_id="inference-error-valueerror-span-and-event-schema-v2",
+        scenario="agent",
+        semconv_opt_in=EXPERIMENTAL_OPT_IN,
+        capture_content="span_and_event",
+        schema_version=2,
+        model_exception=ValueError("boom"),
+    ),
     # Tool failure: the inference succeeds and the tool it asked for raises,
     # so the failure has to show up on the tool span rather than the call.
     FunctionalTestCase(
