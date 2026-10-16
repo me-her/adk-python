@@ -514,6 +514,13 @@ def record_response_source(
     invocation_context: InvocationContext,
 ) -> None:
   """Names the callback that produced the response recorded on ``span``."""
+  if (
+      source in ("before_model_callback", "on_model_error_callback")
+      and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    # Schema v2 has no `call_llm` span: `span` is the agent span, which covers
+    # every model call of the turn, so it cannot name one call's callback.
+    return
   _set_response_source(
       tracing._telemetry_config_from_invocation_context(invocation_context),
       span,

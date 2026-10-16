@@ -272,6 +272,28 @@ async def test_trace_call_llm_skips_non_recording_span(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trace_call_llm_records_nothing_under_schema_v2(
+    monkeypatch, mock_span_fixture
+):
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '2')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      LlmResponse(turn_complete=True),
+  )
+
+  mock_span_fixture.set_attribute.assert_not_called()
+  mock_span_fixture.set_attributes.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_trace_call_llm_with_no_usage_metadata(
     monkeypatch, mock_span_fixture
 ):
@@ -1755,7 +1777,11 @@ async def test_generate_content_span(
   llm_request = LlmRequest(
       model='some-model',
       contents=[user_content1, user_content2],
-      config=types.GenerateContentConfig(system_instruction=system_instruction),
+      config=types.GenerateContentConfig(
+          system_instruction=system_instruction,
+          top_p=0.5,
+          max_output_tokens=100,
+      ),
   )
   llm_response = LlmResponse(
       content=model_content,
@@ -1791,6 +1817,8 @@ async def test_generate_content_span(
       GEN_AI_OPERATION_NAME, 'generate_content'
   )
   mock_span.set_attribute.assert_any_call(GEN_AI_REQUEST_MODEL, 'some-model')
+  mock_span.set_attribute.assert_any_call('gen_ai.request.top_p', 0.5)
+  mock_span.set_attribute.assert_any_call('gen_ai.request.max_tokens', 100)
   mock_span.set_attribute.assert_any_call(
       GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
   )

@@ -19,19 +19,64 @@
         "status": "ERROR",
         "children": [
           {
-            "name": "call_llm",
-            "attributes": {},
+            "name": "generate_content gemini-2.5-flash",
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.input.messages": [
+                {
+                  "role": "user",
+                  "parts": [
+                    {
+                      "content": "hello",
+                      "type": "text"
+                    }
+                  ]
+                }
+              ],
+              "gen_ai.system_instructions": [
+                {
+                  "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
+                  "type": "text"
+                }
+              ],
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "some_tool",
+                  "description": "A sample tool.",
+                  "parameters": {
+                    "properties": {
+                      "arg1": {
+                        "title": "Arg1",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "arg1"
+                    ],
+                    "title": "some_toolParams",
+                    "type": "object"
+                  },
+                  "type": "function"
+                }
+              ]
+            },
             "status": "ERROR",
-            "children": [
+            "children": [],
+            "logs": [
               {
-                "name": "generate_content gemini-2.5-flash",
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
                 "attributes": {
-                  "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "user.id": "test_user",
                   "gen_ai.input.messages": [
                     {
                       "role": "user",
@@ -69,62 +114,9 @@
                       "type": "function"
                     }
                   ]
-                },
-                "status": "ERROR",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "gen_ai.client.inference.operation.details",
-                    "body": null,
-                    "attributes": {
-                      "gen_ai.agent.name": "some_root_agent",
-                      "gen_ai.conversation.id": "PRESENT",
-                      "gcp.vertex.agent.event_id": "PRESENT",
-                      "gcp.vertex.agent.invocation_id": "PRESENT",
-                      "user.id": "test_user",
-                      "gen_ai.input.messages": [
-                        {
-                          "role": "user",
-                          "parts": [
-                            {
-                              "content": "hello",
-                              "type": "text"
-                            }
-                          ]
-                        }
-                      ],
-                      "gen_ai.system_instructions": [
-                        {
-                          "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
-                          "type": "text"
-                        }
-                      ],
-                      "gen_ai.tool.definitions": [
-                        {
-                          "name": "some_tool",
-                          "description": "A sample tool.",
-                          "parameters": {
-                            "properties": {
-                              "arg1": {
-                                "title": "Arg1",
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "arg1"
-                            ],
-                            "title": "some_toolParams",
-                            "type": "object"
-                          },
-                          "type": "function"
-                        }
-                      ]
-                    }
-                  }
-                ]
+                }
               }
-            ],
-            "logs": []
+            ]
           }
         ],
         "logs": []

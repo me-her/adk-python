@@ -46,7 +46,9 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MAX_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_TOP_P
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ARGUMENTS
@@ -647,6 +649,15 @@ def _set_context_cache_attributes(
   span.set_attributes(attributes)
 
 
+def _start_call_llm_span(
+    caller_context: otel_context.Context,
+) -> Span | None:
+  """Starts the `call_llm` span; None under schema v2, which has no such span."""
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    return None
+  return tracer.start_span("call_llm", context=caller_context)
+
+
 def trace_call_llm(
     invocation_context: InvocationContext,
     event_id: str,
@@ -654,17 +665,18 @@ def trace_call_llm(
     llm_response: LlmResponse,
     span: Span | None = None,
 ):
-  """Traces a call to the LLM.
-
-  This function records details about the LLM request and response as
-  attributes on the current OpenTelemetry span.
+  """Records the `call_llm` attributes. A no-op under schema v2.
 
   Args:
     invocation_context: The invocation context for the current agent run.
     event_id: The ID of the event.
     llm_request: The LLM request object.
     llm_response: The LLM response object.
+    span: The `call_llm` span to record on. Defaults to the current span.
   """
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    # No `call_llm` span under v2; `span` is some other span.
+    return
   if span is None:
     span = trace.get_current_span()
   if not span.is_recording():
@@ -1135,6 +1147,12 @@ def _set_common_generate_content_attributes(
 ):
   span.set_attribute(GEN_AI_OPERATION_NAME, "generate_content")
   span.set_attribute(GEN_AI_REQUEST_MODEL, llm_request.model or "")
+  if llm_request.config.top_p is not None:
+    span.set_attribute(GEN_AI_REQUEST_TOP_P, llm_request.config.top_p)
+  if llm_request.config.max_output_tokens is not None:
+    span.set_attribute(
+        GEN_AI_REQUEST_MAX_TOKENS, llm_request.config.max_output_tokens
+    )
   span.set_attributes(common_attributes)
 
 
