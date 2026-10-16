@@ -55,12 +55,14 @@ class SemconvConfig:
   name: str
   semconv_opt_in: str | None
   capture_content: str | None
+  # Stable semconv is v1-only: v2 defaults to experimental.
+  schema_versions: tuple[Literal[1, 2], ...] = (1, 2)
 
 
 # The configurations exercised by every scenario.
 SEMCONV_CONFIGS: list[SemconvConfig] = [
-    SemconvConfig("stable-no-capture", None, "false"),
-    SemconvConfig("stable-capture", None, "true"),
+    SemconvConfig("stable-no-capture", None, "false", schema_versions=(1,)),
+    SemconvConfig("stable-capture", None, "true", schema_versions=(1,)),
     SemconvConfig("experimental-no-content", EXPERIMENTAL_OPT_IN, "no_content"),
     SemconvConfig("experimental-span-only", EXPERIMENTAL_OPT_IN, "span_only"),
     SemconvConfig("experimental-event-only", EXPERIMENTAL_OPT_IN, "event_only"),
@@ -81,7 +83,7 @@ def semconv_matrix(scenario: Scenario) -> list[FunctionalTestCase]:
           schema_version=schema_version,
       )
       for config in SEMCONV_CONFIGS
-      for schema_version in (1, 2)
+      for schema_version in config.schema_versions
   ]
 
 

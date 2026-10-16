@@ -177,6 +177,9 @@ async def check_case(case: FunctionalTestCase) -> Recording:
   is held to the gaps already explained: one that is new, or recorded without
   a ``kind`` and a ``reason``, fails. Returns the native recording, the one
   the goldens are of.
+
+  Under the stable semconv ADK records the call on both sides, and the
+  instrumentor is skipped.
   """
   recordings = await record_case(case)
   native = recordings["native"]

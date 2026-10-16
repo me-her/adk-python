@@ -1067,7 +1067,9 @@ async def record_inference_telemetry(
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
-      if agent is not None and tracing._should_emit_native_telemetry(agent):
+      if agent is not None and isinstance(
+          tel_ctx.span, tracing.GenerateContentSpan
+      ):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
             elapsed_s=elapsed_s,

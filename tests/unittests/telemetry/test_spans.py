@@ -76,6 +76,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_PROVIDER_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
@@ -106,6 +107,12 @@ class SimpleTestTool(BaseTool):
       self, *, args: dict[str, object], tool_context: ToolContext
   ) -> object:
     return 'SimpleTestTool result'
+
+
+@pytest.fixture(autouse=True)
+def _legacy_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Most tests here cover schema v1; v2 tests set the env var themselves."""
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
 
 
 @pytest.fixture
@@ -1757,7 +1764,7 @@ async def test_generate_content_span(
       env_capture_value,
   )
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: False,
   )
 
@@ -1902,8 +1909,12 @@ async def test_generate_content_span_with_genai_instrumentation(
 ):
   """Test that genai-instrumentation delegation branch does not forward USER_ID in attributes."""
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
   )
   # _is_gemini_agent returns true for gemini models.
   agent = LlmAgent(name='test_agent', model='gemini-1.5-pro')
@@ -1996,7 +2007,7 @@ async def test_generate_content_span_with_experimental_semconv(
       'gen_ai_latest_experimental',
   )
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: False,
   )
 
@@ -2269,6 +2280,8 @@ async def test_generate_content_span_with_experimental_semconv(
   assert attributes[GEN_AI_AGENT_NAME] == invocation_context.agent.name
   assert GEN_AI_CONVERSATION_ID in attributes
   assert attributes[GEN_AI_CONVERSATION_ID] == invocation_context.session.id
+  # Schema v1 keeps `gen_ai.system` only; `gen_ai.provider.name` is v2.
+  assert GEN_AI_PROVIDER_NAME not in attributes
 
 
 def test_trace_tool_call_with_tool_execution_error(
@@ -2489,7 +2502,7 @@ async def test_generate_content_span_system_name_follows_model(
 ):
   """The system name follows the served model, not just the deployment env."""
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: False,
   )
   agent = LlmAgent(name='test_agent', model=model)
@@ -3152,7 +3165,7 @@ async def test_use_generate_content_span_yields_the_bare_span(
   takes a plain span.
   """
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: False,
   )
   agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
@@ -3203,8 +3216,12 @@ async def test_use_generate_content_span_delegates_to_the_genai_instrumentor(
   only stashed on the context for the library to pick up.
   """
   monkeypatch.setattr(
-      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
       lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
   )
   agent = LlmAgent(name='test_agent', model='gemini-1.5-pro')
   invocation_context = await _create_invocation_context(agent)

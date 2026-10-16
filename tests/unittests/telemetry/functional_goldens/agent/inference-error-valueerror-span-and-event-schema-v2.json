@@ -27,6 +27,7 @@
               "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
               "gen_ai.input.messages": [
                 {
                   "role": "user",
@@ -76,6 +77,7 @@
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "user.id": "test_user",
                   "gen_ai.input.messages": [
                     {
@@ -130,7 +132,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "error.type": "ValueError"
         },

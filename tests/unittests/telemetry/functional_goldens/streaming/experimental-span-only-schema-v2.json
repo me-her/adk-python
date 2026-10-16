@@ -27,6 +27,7 @@
               "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
               "gen_ai.response.finish_reasons": [
                 "stop"
               ],
@@ -99,6 +100,7 @@
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
@@ -147,6 +149,7 @@
               "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
               "gen_ai.response.finish_reasons": [
                 "stop"
               ],
@@ -250,6 +253,7 @@
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "gen_ai.usage.input_tokens": 150,
                   "gen_ai.usage.output_tokens": 50,
                   "gen_ai.usage.cache_read.input_tokens": 60,
@@ -280,7 +284,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash"
         },
@@ -292,7 +296,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "input"
@@ -303,7 +307,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "output"

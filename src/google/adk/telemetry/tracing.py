@@ -36,7 +36,6 @@ from typing import Final
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from google.genai.models import Models
 from opentelemetry import _logs
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -46,6 +45,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_PROVIDER_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MAX_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_TOP_P
@@ -57,6 +57,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiProviderNameValues
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
 from opentelemetry.semconv._incubating.attributes.process_attributes import PROCESS_EXIT_CODE
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
@@ -74,6 +75,7 @@ from opentelemetry.util.types import AttributeValue
 from pydantic_core import to_jsonable_python
 from typing_extensions import deprecated
 
+from . import _genai_instrumentor
 from .. import version
 from ..auth.auth_credential import _redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
@@ -994,7 +996,7 @@ def use_generate_content_span(
   log_only_common_attributes = {}
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
+  if _should_emit_native_telemetry(invocation_context.agent, telemetry_config):
     with _use_native_generate_content_span_stable_semconv(
         llm_request=llm_request,
         common_attributes=common_attributes,
@@ -1035,7 +1037,17 @@ async def use_inference_span(
   log_only_common_attributes = {}
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
+  if _should_emit_native_telemetry(invocation_context.agent, telemetry_config):
+    if (
+        telemetry_config.should_use_experimental_genai_semconv
+        and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+    ):
+      # Semconv >= 1.37 replaces `gen_ai.system`; both are kept for consumers.
+      # Schema v1 keeps `gen_ai.system` only, as it did before the provider
+      # name existed.
+      common_attributes[GEN_AI_PROVIDER_NAME] = _resolve_gen_ai_provider_name(
+          llm_request.model
+      )
     with ExitStack() as stack:
       gc_span = stack.enter_context(
           _use_native_generate_content_span(
@@ -1072,28 +1084,17 @@ async def use_inference_span(
       yield
 
 
-def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
-  maybe_wrapped_function = Models.generate_content
-  while wrapped := getattr(maybe_wrapped_function, "__wrapped__", None):
-    if (
-        "opentelemetry/instrumentation/google_genai"
-        in maybe_wrapped_function.__code__.co_filename.replace("\\", "/")
-    ):
-      return True
-    maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
+def _should_emit_native_telemetry(
+    agent: BaseAgent, telemetry_config: TelemetryConfig
+) -> bool:
+  """Whether ADK, not the google-genai instrumentor, records this inference.
 
-  return False
-
-
-def _should_emit_native_telemetry(agent: BaseAgent) -> bool:
-  """If the google-genai instrumentation lib is active AND this is a Gemini agent, then the lib already emits inference metrics."""
-  if (
-      _instrumented_with_opentelemetry_instrumentation_google_genai()
-      and _is_gemini_agent(agent)
-  ):
-    return False
-
-  return True
+  The instrumentor records Gemini inferences in one semconv for the whole
+  process, so ADK records whenever that is not the one this request wants.
+  """
+  if not _is_gemini_agent(agent):
+    return True
+  return not _genai_instrumentor.records_inference(telemetry_config)
 
 
 @contextmanager
@@ -1394,6 +1395,24 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
     return provider
 
   return _guess_gemini_system_name()
+
+
+# `gen_ai.provider.name` renamed the Google values of `gen_ai.system`; the rest
+# carried over unchanged.
+_PROVIDER_NAME_BY_SYSTEM_NAME: Final[Mapping[str, str]] = {
+    GenAiSystemValues.GEMINI.name.lower(): (
+        GenAiProviderNameValues.GCP_GEMINI.value
+    ),
+    GenAiSystemValues.VERTEX_AI.name.lower(): (
+        GenAiProviderNameValues.GCP_VERTEX_AI.value
+    ),
+}
+
+
+def _resolve_gen_ai_provider_name(model: str | None) -> str:
+  """Returns the `gen_ai.provider.name` value for a model."""
+  system_name = _resolve_gen_ai_system_name(model)
+  return _PROVIDER_NAME_BY_SYSTEM_NAME.get(system_name, system_name)
 
 
 def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
