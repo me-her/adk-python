@@ -126,11 +126,10 @@ RESOURCE_EXHAUSTED = genai_errors.ClientError(
 
 
 ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
-    # Opted in to what the ``stable-no-capture`` rows above run without, and
-    # named for them: those rows are this pair's opt-in-less twin, so the two
-    # goldens together are what pins the gate for this scenario.
+    # Opted in to ``adk.experimental.*`` telemetry; the ``*-no-capture`` rows
+    # above are the opt-in-less twins, so together they pin the gate.
     FunctionalTestCase(
-        test_id="experimental-telemetry-stable-no-capture-schema-v1",
+        test_id="experimental-telemetry-no-capture-schema-v1",
         scenario="agent",
         semconv_opt_in=None,
         capture_content="false",
@@ -138,7 +137,7 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         experimental_telemetry=True,
     ),
     FunctionalTestCase(
-        test_id="experimental-telemetry-stable-no-capture-schema-v2",
+        test_id="experimental-telemetry-no-capture-schema-v2",
         scenario="agent",
         semconv_opt_in=None,
         capture_content="false",
