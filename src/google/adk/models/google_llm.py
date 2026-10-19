@@ -316,7 +316,11 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         multiple_candidates_logged = False
         last_usage_metadata = None
-        async with Aclosing(responses) as agen:
+        # genai implements generate_content_stream as an async generator.
+        response_stream = cast(
+            AsyncGenerator[types.GenerateContentResponse, None], responses
+        )
+        async with Aclosing(response_stream) as agen:
           async for response in agen:
             if logger.isEnabledFor(logging.DEBUG):
               logger.debug(_build_response_log(response))

@@ -1121,7 +1121,9 @@ class AnthropicLlm(BaseLlm):
   """An optional pre-configured Anthropic client."""
 
   # Coordinates concurrent coroutines initializing the client.
-  _client_init_task: asyncio.Task | None = PrivateAttr(default=None)
+  _client_init_task: (
+      asyncio.Task[AsyncAnthropic | AsyncAnthropicVertex] | None
+  ) = PrivateAttr(default=None)
 
   @classmethod
   @override
@@ -1571,7 +1573,9 @@ class AnthropicLlm(BaseLlm):
           asyncio.to_thread(lambda: self._anthropic_client)
       )
 
-      def _on_done(t: asyncio.Task) -> None:
+      def _on_done(
+          t: asyncio.Task[AsyncAnthropic | AsyncAnthropicVertex],
+      ) -> None:
         if self._client_init_task is t:
           self._client_init_task = None
         if not t.cancelled():
