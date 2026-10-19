@@ -73,6 +73,87 @@ def _build_declaration_cached(
   )
 
 
+def _make_keyword_compatible(target: Callable[..., Any]) -> Callable[..., Any]:
+  """Wraps a callable so positional-only parameters accept keyword args."""
+  try:
+    signature = inspect.signature(target)
+  except (ValueError, TypeError):
+    return target
+  pos_only_params = [
+      p
+      for p in signature.parameters.values()
+      if p.kind == inspect.Parameter.POSITIONAL_ONLY
+  ]
+  if not pos_only_params:
+    return target
+
+  def _bind_args(kwargs: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+    pos_args: list[Any] = []
+    kw_args = dict(kwargs)
+    for i, p in enumerate(pos_only_params):
+      if p.name in kw_args:
+        pos_args.append(kw_args.pop(p.name))
+      elif any(rem.name in kw_args for rem in pos_only_params[i + 1 :]):
+        if p.default is not inspect.Parameter.empty:
+          pos_args.append(p.default)
+        else:
+          break
+      else:
+        break
+    return pos_args, kw_args
+
+  is_async_gen = inspect.isasyncgenfunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.isasyncgenfunction(target.__call__)
+  )
+  if is_async_gen:
+
+    @functools.wraps(target)
+    async def async_gen_wrapper(**kwargs: Any) -> Any:
+      pos, kw = _bind_args(kwargs)
+      gen = target(*pos, **kw)
+      try:
+        async for item in gen:
+          yield item
+      finally:
+        await gen.aclose()
+
+    return async_gen_wrapper
+
+  is_sync_gen = inspect.isgeneratorfunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.isgeneratorfunction(target.__call__)
+  )
+  if is_sync_gen:
+
+    @functools.wraps(target)
+    def sync_gen_wrapper(**kwargs: Any) -> Any:
+      pos, kw = _bind_args(kwargs)
+      return (yield from target(*pos, **kw))
+
+    return sync_gen_wrapper
+
+  is_async = inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+  if is_async:
+
+    @functools.wraps(target)
+    async def async_wrapper(**kwargs: Any) -> Any:
+      pos, kw = _bind_args(kwargs)
+      return await target(*pos, **kw)
+
+    return async_wrapper
+
+  @functools.wraps(target)
+  def sync_wrapper(**kwargs: Any) -> Any:
+    pos, kw = _bind_args(kwargs)
+    return target(*pos, **kw)
+
+  return sync_wrapper
+
+
 class FunctionTool(BaseTool):
   """A tool that wraps a user-defined Python function.
 
@@ -113,6 +194,19 @@ class FunctionTool(BaseTool):
         tuple[tuple[str, ...], GoogleLLMVariant, bool],
         types.FunctionDeclaration,
     ] = {}
+    self._compatible_func_cache: (
+        tuple[Callable[..., Any], Callable[..., Any]] | None
+    ) = None
+
+  def _get_compatible_func(self) -> Callable[..., Any]:
+    """Returns the current self.func wrapped by _make_keyword_compatible."""
+    # Keyed on self.func so reassigning or patching it takes effect; getattr
+    # because subclasses may skip FunctionTool.__init__.
+    cached = getattr(self, "_compatible_func_cache", None)
+    if cached is None or cached[0] is not self.func:
+      cached = (self.func, _make_keyword_compatible(self.func))
+      self._compatible_func_cache = cached
+    return cached[1]
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -466,7 +560,8 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     """Returns a cached FunctionNode configured for this generator tool."""
     from ..workflow._function_node import FunctionNode
 
-    cache_key = (self.name, self.func, self._context_param_name)
+    func = self._get_compatible_func()
+    cache_key = (self.name, func, self._context_param_name)
     if (
         self._generator_node_cache is not None
         and self._generator_node_cache[0] == cache_key
@@ -478,7 +573,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       node_name = f"_{node_name}"
 
     node = FunctionNode(
-        func=self.func,
+        func=func,
         name=node_name,
         parameter_binding="node_input",
         rerun_on_resume=True,
@@ -528,6 +623,10 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         if target is self.func
         else unwrap_callable(target)
     )
+    if target is self.func:
+      target = self._get_compatible_func()
+    else:
+      target = _make_keyword_compatible(target)
     return await _invoke_callable(target, args_to_call, unwrapped=unwrapped)
 
   def _get_mandatory_args(
