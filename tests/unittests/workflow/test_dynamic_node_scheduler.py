@@ -1136,6 +1136,41 @@ async def test_dynamic_node_state_maintains_independent_run_counters():
   assert state.run_counters['branch_2'] == {'child': 1}
 
 
+def test_dynamic_node_state_reserve_run_ids_records_every_ancestor():
+  """reserve_run_ids records the run id of each segment under its parent."""
+  state = DynamicNodeState()
+
+  state.reserve_run_ids('a@1/b@3/c@2')
+
+  assert state.run_counters == {
+      '': {'a': 1},
+      'a@1': {'b': 3},
+      'a@1/b@3': {'c': 2},
+  }
+  assert state.next_run_id('a') == '2'
+  assert state.next_run_id('b', parent_path='a@1') == '4'
+  assert state.next_run_id('c', parent_path='a@1/b@3') == '3'
+
+
+def test_dynamic_node_state_reserve_run_ids_never_lowers_a_counter():
+  """reserve_run_ids keeps a counter that is already higher."""
+  state = DynamicNodeState()
+  state.run_counters = {'': {'a': 5}, 'a@1': {'b': 1}}
+
+  state.reserve_run_ids('a@1/b@3')
+
+  assert state.run_counters == {'': {'a': 5}, 'a@1': {'b': 3}}
+
+
+def test_dynamic_node_state_reserve_run_ids_skips_non_numeric_run_ids():
+  """reserve_run_ids skips a segment whose run id is not a number."""
+  state = DynamicNodeState()
+
+  state.reserve_run_ids('a@1/b@run-x/c@2')
+
+  assert state.run_counters == {'': {'a': 1}, 'a@1/b@run-x': {'c': 2}}
+
+
 @pytest.mark.asyncio
 async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   """A static graph node and a dynamic node of the same name get distinct run IDs.
