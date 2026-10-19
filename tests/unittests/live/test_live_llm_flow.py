@@ -176,6 +176,40 @@ async def test_postprocess_live_flow_skips_empty_response():
   assert events == []
 
 
+@pytest.mark.parametrize('control', ['turn_complete', 'interrupted'])
+async def test_postprocess_live_flow_yields_control_event_after_flushed_audio(
+    control,
+):
+  """Flushing saved audio still yields the control event that triggered it."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  response = LlmResponse(**{control: True})
+  event = Event(
+      id='ev-1',
+      invocation_id=context.invocation_id,
+      author='model',
+  )
+  flushed = Event(id='flushed-event')
+
+  with mock.patch.object(
+      flow._realtime_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+  ) as mock_flush:
+    mock_flush.return_value = [flushed]
+    events = [
+        e
+        async for e in _live_llm_flow.postprocess_live_flow(
+            flow, context, LlmRequest(), response, event
+        )
+    ]
+
+  assert len(events) == 2
+  assert events[0] is flushed
+  assert getattr(events[1], control) is True
+
+
 async def test_handle_control_event_flush_on_interrupted():
   """An interrupted response triggers a model-only cache flush."""
   flow = _TestBaseLlmFlow()
