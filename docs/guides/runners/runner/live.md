@@ -10,9 +10,15 @@ The `run_live` subsystem resolves this by connecting `Runner` to Gemini Multimod
 
 ## Get started
 
-Attach an `LlmAgent` to an `App`, connect it to an `InMemoryRunner`, and drive a live session using `LiveRequestQueue`:
+Attach an `LlmAgent` to an `App`, connect it to an `InMemoryRunner`, create a session, and drive a live session using `LiveRequestQueue`:
 
 ```python
+from google.adk.agents import LlmAgent
+from google.adk.apps import App
+from google.adk.live import LiveRequestQueue
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
 root_agent = LlmAgent(
     name="voice_agent",
     instruction="You are a voice assistant. Answer queries concisely in spoken English.",
@@ -23,7 +29,14 @@ runner = InMemoryRunner(app=app)
 queue = LiveRequestQueue()
 
 # In an async task:
-# Push user text or audio into the queue
+# 1. Create the session that the live conversation runs in
+session = await runner.session_service.create_session(
+    app_name=app.name,
+    user_id="user_123",
+    session_id="session_live",
+)
+
+# 2. Push user text or audio into the queue
 queue.send_content(
     content=types.Content(
         role="user",
@@ -33,7 +46,7 @@ queue.send_content(
 
 async for event in runner.run_live(
     user_id="user_123",
-    session_id="session_live",
+    session_id=session.id,
     live_request_queue=queue,
 ):
   if event.content and event.content.parts:
@@ -42,7 +55,7 @@ async for event in runner.run_live(
         print("Live model response:", part.text)
 ```
 
-The queue allows callers to push PCM audio frames or text messages into the active session asynchronously while `run_live` streams response events back.
+`run_live` resolves the session the same way `run_async` does, so the session must exist before you call it unless the `Runner` was constructed with `auto_create_session=True`. The queue allows callers to push PCM audio frames or text messages into the active session asynchronously while `run_live` streams response events back, and calling `queue.close()` closes the live connection and ends the `async for` loop.
 
 ## How it works
 
@@ -135,7 +148,7 @@ async def fetch_stock_ticker(
 
 ## Limitations
 
-*   **Gemini Live Model Requirement:** `run_live` requires model endpoints that support the Gemini Multimodal Live API (e.g. `gemini-2.0-flash-exp`).
+*   **Gemini Live Model Requirement:** `run_live` requires model endpoints that support the Gemini Multimodal Live API. An `LlmAgent` with no `model` set uses `LlmAgent.DEFAULT_LIVE_MODEL` (`gemini-live-2.5-flash-native-audio`) in live mode.
 *   **Inline Audio Persistence:** Raw PCM audio blobs (`inline_data`) are intentionally omitted from session storage. To retain session audio and video history, set `save_live_blob=True` on `RunConfig`.
 
 ## Related guides & samples
