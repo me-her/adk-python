@@ -94,6 +94,7 @@ from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
+from ..sessions.base_session_service import GetSessionConfig
 from ..sessions.session import Session
 from ..telemetry._web_ui import WebUiLogExporter
 from ..telemetry.setup import maybe_set_otel_providers
@@ -2217,6 +2218,7 @@ class ApiServer:
             app_name=req.app_name,
             user_id=req.user_id,
             session_id=req.session_id,
+            config=GetSessionConfig(num_recent_events=0),
         )
         if not session:
           raise HTTPException(

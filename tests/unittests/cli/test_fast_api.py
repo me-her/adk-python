@@ -2643,6 +2643,47 @@ def test_agent_run_sse_passes_max_llm_calls(
   assert captured["run_config"].max_llm_calls == 37
 
 
+async def test_agent_run_sse_session_check_loads_no_events(
+    test_app, create_test_session, mock_session_service, monkeypatch
+):
+  """The /run_sse existence check does not load the session's events."""
+  info = create_test_session
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  for i in range(50):
+    await mock_session_service.append_event(
+        session,
+        Event(
+            author="user",
+            content=types.Content(role="user", parts=[types.Part(text=f"{i}")]),
+        ),
+    )
+
+  loaded_event_counts = []
+  original_get_session = mock_session_service.get_session
+
+  async def counting_get_session(**kwargs):
+    result = await original_get_session(**kwargs)
+    loaded_event_counts.append(len(result.events) if result else None)
+    return result
+
+  monkeypatch.setattr(mock_session_service, "get_session", counting_get_session)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  assert loaded_event_counts == [0]
+
+
 def test_agent_run_sse_splits_artifact_delta(
     test_app, create_test_session, monkeypatch
 ):
