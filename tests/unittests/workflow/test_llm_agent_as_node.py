@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 from typing import Any
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm.task._task_models import TaskResult
@@ -35,6 +36,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import _TaskAgentTool
 from google.adk.tools.function_tool import FunctionTool
@@ -390,7 +392,7 @@ class TestBuildNode:
     without permanently mutating the original agent object: the node built
     from the agent is configured once with include_contents='none' when unset,
     preserving the input agent's configuration while reusing the node and its
-    resolved model memo across every future invocation.
+    resolved model across every future invocation.
     """
     agent = LlmAgent(
         name='test_agent',
@@ -443,11 +445,11 @@ class TestBuildNode:
     assert events[0].content.parts[0].text == 'ok'
 
   @pytest.mark.asyncio
-  async def test_single_turn_node_preserves_model_memo_across_runs(
+  async def test_single_turn_node_reuses_model_across_runs(
       self,
       monkeypatch: pytest.MonkeyPatch,
   ):
-    """Single-turn nodes preserve the resolved model memo across invocations."""
+    """Single-turn nodes reuse one resolved model across invocations."""
     agent = LlmAgent(
         name='test_agent',
         model='gemini-2.5-flash',
@@ -460,8 +462,10 @@ class TestBuildNode:
     ctx.get_invocation_context.return_value = ic
     ic.model_copy.return_value = ic
 
+    models = []
+
     async def mock_run_async(self, *args, **kwargs):
-      _ = self.canonical_model
+      models.append(self.canonical_model)
       yield Event(
           invocation_id='inv',
           author=self.name,
@@ -481,11 +485,71 @@ class TestBuildNode:
     )
 
     _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='1')]
-    assert wrapper._resolved_model is not None
-    first_resolved = wrapper._resolved_model
-
     _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='2')]
-    assert wrapper._resolved_model is first_resolved
+
+    assert len(models) == 2
+    assert models[0] is models[1]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      'path',
+      ['root', 'default', 'transfer', 'workflow', 'run_node', 'parallel'],
+  )
+  async def test_string_model_is_resolved_once_across_turns(
+      self,
+      path: str,
+      request: pytest.FixtureRequest,
+      monkeypatch: pytest.MonkeyPatch,
+  ):
+    """Each run copies the agent, and the copies reuse one resolved model."""
+
+    def agent(name: str, **kwargs: Any) -> LlmAgent:
+      return LlmAgent(
+          name=name, model=f'mock-{name}', instruction='Test.', **kwargs
+      )
+
+    def new_llm(model: str) -> _testing_utils.MockModel:
+      if model == 'mock-root' and path == 'transfer':
+        transfer = types.Part.from_function_call(
+            name='transfer_to_agent', args={'agent_name': 'sub'}
+        )
+        return _testing_utils.MockModel.create([transfer] * 4)
+      return _testing_utils.MockModel.create(['ok'] * 20)
+
+    if path == 'root':
+      root = agent('root')
+    elif path == 'default':
+      monkeypatch.setattr(LlmAgent, '_default_model', 'mock-root')
+      root = LlmAgent(name='root', instruction='Test.')
+    elif path == 'transfer':
+      sub = agent('sub', disallow_transfer_to_parent=True)
+      root = agent('root', sub_agents=[sub])
+    elif path == 'workflow':
+      root = Workflow(name='wf', edges=[(START, agent('a'), agent('b'))])
+    elif path == 'run_node':
+      inner = agent('inner')
+
+      @node(rerun_on_resume=True)
+      async def call_agent(*, ctx, node_input):
+        yield await ctx.run_node(inner, node_input='go')
+
+      root = Workflow(name='wf', edges=[(START, call_agent)])
+    else:
+
+      def two_items(node_input: Any) -> list[str]:
+        return ['a', 'b']
+
+      worker = node(agent('worker'), parallel_worker=True)
+      root = Workflow(name='wf', edges=[(START, two_items, worker)])
+    runner = _new_workflow_runner(root, request.function.__name__)
+    calls_after_each_turn = []
+    with patch.object(LLMRegistry, 'new_llm', side_effect=new_llm) as patched:
+      for turn in range(4):
+        await runner.run_async(_testing_utils.get_user_content(f'turn {turn}'))
+        calls_after_each_turn.append(patched.call_count)
+
+    assert calls_after_each_turn[0] > 0
+    assert calls_after_each_turn == [calls_after_each_turn[0]] * 4
 
   def test_name_override(self):
     """build_node respects explicit name override."""
