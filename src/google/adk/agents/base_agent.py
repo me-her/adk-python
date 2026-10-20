@@ -45,8 +45,6 @@ from typing_extensions import TypeAlias
 from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..features import experimental
-from ..features import FeatureName
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
@@ -81,7 +79,6 @@ AfterAgentCallback: TypeAlias = Union[
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
-@experimental(FeatureName.AGENT_STATE)
 class BaseAgentState(BaseModel):
   """Base class for all agent states."""
 
@@ -782,7 +779,6 @@ class BaseAgent(BaseNode, abc.ABC):
       ' versions. Use `google.adk.agents.config_agent_utils.from_config`'
       ' instead.'
   )
-  @experimental(FeatureName.AGENT_CONFIG)
   def from_config(
       cls: Type[SelfAgent],
       config: Union[BaseModel, dict[str, Any]],
@@ -829,7 +825,6 @@ class BaseAgent(BaseNode, abc.ABC):
       ' versions. Please define fields directly on the class or use the dynamic'
       ' YAML loader.'
   )
-  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[SelfAgent],
       config: Any,

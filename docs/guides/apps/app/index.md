@@ -208,9 +208,8 @@ build an `LlmEventSummarizer` from the root agent's model.
 
 ## Limitations
 
-*   **Experimental configs**: `EventsCompactionConfig`, `ResumabilityConfig`,
-    and `ContextCacheConfig` all emit an experimental warning on construction
-    and may change without notice.
+*   **Experimental configs**: `EventsCompactionConfig` and `ResumabilityConfig`
+    emit an experimental warning on construction and may change without notice.
 *   **`EventsCompactionConfig` is not re-exported**: `google.adk.apps` exports
     only `App` and `ResumabilityConfig`. Import `EventsCompactionConfig` from
     `google.adk.apps.app`.
