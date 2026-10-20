@@ -42,6 +42,7 @@ from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
 from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.not_found_error import NotFoundError
@@ -7333,7 +7334,7 @@ def test_span_buffers_filled_when_web_enabled(
   ) == ["ApiServerSpanExporter", "InMemoryExporter"]
 
 
-def test_app_info_rejects_special_agent_only_in_api_server_mode(
+def test_app_info_serves_special_agent_only_on_loopback_dev_server(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
@@ -7341,7 +7342,7 @@ def test_app_info_rejects_special_agent_only_in_api_server_mode(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  """Internal `__` apps reach the dev server, but not the api server."""
+  """Internal `__` apps reach a loopback dev server, but not the api server."""
   api_only_client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
@@ -7373,6 +7374,65 @@ def test_app_info_rejects_special_agent_only_in_api_server_mode(
   )
   assert allowed.status_code == 400
   assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+@pytest.mark.parametrize("bind_host", ["0.0.0.0", None])
+def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
+    bind_host,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A dev server on a network address, or an unknown one, refuses `__` apps."""
+  agent_loader = AgentLoader(str(tmp_path))
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agent_loader=agent_loader,
+      bind_host=bind_host,
+  )
+
+  response = client.get("/apps/__internal_assistant/app-info")
+
+  assert response.status_code == 403
+  assert "loopback" in response.json()["detail"]
+  # Eval runs load the app without a runner, so the loader must refuse it too.
+  with pytest.raises(PermissionError):
+    agent_loader.load_agent("__adk_agent_builder_assistant")
+
+
+def test_api_server_fallback_rejects_special_agent_even_on_loopback(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Packages that ship without dev_server.py get an ApiServer, which is closed."""
+  with patch.dict(sys.modules, {"google.adk.cli.dev_server": None}):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        bind_host="127.0.0.1",
+    )
+
+  response = client.get("/apps/__internal_assistant/app-info")
+
+  assert response.status_code == 403
+  assert "internal special agents" in response.json()["detail"]
 
 
 def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(

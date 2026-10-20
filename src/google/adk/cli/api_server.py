@@ -1061,7 +1061,8 @@ class ApiServer:
           status_code=403,
           detail=(
               "Access to internal special agents is disabled in API server"
-              " mode."
+              " mode and on a development server not known to be bound to a"
+              " loopback address."
           ),
       )
     # Handle cleanup
@@ -1674,7 +1675,8 @@ class ApiServer:
             status_code=403,
             detail=(
                 "Access to internal special agents is disabled in API server"
-                " mode."
+                " mode and on a development server not known to be bound to a"
+                " loopback address."
             ),
         )
       agent_or_app = self._load_agent_or_raise(app_name)
