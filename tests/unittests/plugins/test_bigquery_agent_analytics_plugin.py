@@ -17327,6 +17327,76 @@ class TestDropStats:
     assert secret not in caplog.text
     assert "1 row(s) dropped" in caplog.text
 
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("error_mode", ["in_band", "raised"])
+  async def test_permission_denied_drops_are_counted(
+      self, dummy_arrow_schema, error_mode
+  ):
+    """403 / PERMISSION_DENIED drops are classified, never retried."""
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    if error_mode == "in_band":
+
+      async def fake_append_rows(requests, **kwargs):
+        del requests, kwargs
+        resp = mock.MagicMock()
+        resp.row_errors = []
+        resp.error = mock.MagicMock()
+        resp.error.code = (
+            bigquery_agent_analytics_plugin._GRPC_PERMISSION_DENIED
+        )
+        resp.error.message = "permission denied"
+        return _async_gen(resp)
+
+      bp.write_client.append_rows.side_effect = fake_append_rows
+    else:
+
+      async def raise_forbidden(requests, **kwargs):
+        del requests, kwargs
+        raise api_exceptions.PermissionDenied("forbidden")
+
+      bp.write_client.append_rows.side_effect = raise_forbidden
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["permission_denied"] == 1
+    assert bp.dropped_event_count == 1
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("error_mode", ["in_band", "raised"])
+  async def test_not_found_drops_are_counted_in_default_mode(
+      self, dummy_arrow_schema, error_mode
+  ):
+    """404 / NOT_FOUND drops are classified in default stream mode."""
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    if error_mode == "in_band":
+
+      async def fake_append_rows(requests, **kwargs):
+        del requests, kwargs
+        resp = mock.MagicMock()
+        resp.row_errors = []
+        resp.error = mock.MagicMock()
+        resp.error.code = bigquery_agent_analytics_plugin._GRPC_NOT_FOUND
+        resp.error.message = "not found"
+        return _async_gen(resp)
+
+      bp.write_client.append_rows.side_effect = fake_append_rows
+    else:
+
+      async def raise_not_found(requests, **kwargs):
+        del requests, kwargs
+        raise api_exceptions.NotFound("table not found")
+
+      bp.write_client.append_rows.side_effect = raise_not_found
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["not_found"] == 1
+    assert bp.dropped_event_count == 1
+
   def test_plugin_get_drop_stats_aggregates_across_loops(
       self, dummy_arrow_schema
   ):
@@ -17596,8 +17666,15 @@ class TestExactlyOnceDelivery:
     assert processor.get_drop_stats()["retry_exhausted"] == 2
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("code", "message", "expected_reason"),
+      [
+          (3, "invalid argument", "non_retryable"),
+          (7, "permission denied", "permission_denied"),
+      ],
+  )
   async def test_non_retryable_rejection_after_ambiguity_rotates_stream(
-      self, dummy_arrow_schema
+      self, dummy_arrow_schema, code, message, expected_reason
   ):
     """A terminal rejection cannot make an earlier sent attempt safe."""
     client = mock.MagicMock()
@@ -17615,7 +17692,7 @@ class TestExactlyOnceDelivery:
       if calls == 1:
         raise asyncio.TimeoutError()
       if calls == 2:
-        return _async_gen(self._response(7, "permission denied"))
+        return _async_gen(self._response(code, message))
       if request.write_stream == self._STREAM:
         if calls == 3:
           raise asyncio.TimeoutError()
@@ -17636,8 +17713,89 @@ class TestExactlyOnceDelivery:
 
     assert streams == [self._STREAM, self._STREAM, replacement]
     assert processor._next_offset == 1
-    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()[expected_reason] == 1
     create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  async def test_forbidden_after_ambiguity_desyncs_stream_in_eod_mode(
+      self, dummy_arrow_schema
+  ):
+    """A raised Forbidden after an ambiguous attempt desyncs the stream."""
+    client = mock.MagicMock()
+    streams = []
+    calls = 0
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls == 1:
+        # Ambiguous send: request left before a definitive rejection.
+        raise asyncio.TimeoutError()
+      if calls == 2:
+        # Terminal rejection via raised Forbidden (PermissionDenied
+        # subclass) after the ambiguous attempt.
+        raise api_exceptions.PermissionDenied("permission denied")
+      if request.write_stream == self._STREAM:
+        if calls == 3:
+          raise asyncio.TimeoutError()
+        return _async_gen(self._response(6, "offset already exists"))
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert streams == [self._STREAM, self._STREAM, replacement]
+    assert processor._next_offset == 1
+    assert processor.get_drop_stats()["permission_denied"] == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  async def test_first_attempt_forbidden_does_not_desync_stream_in_eod_mode(
+      self, dummy_arrow_schema
+  ):
+    """A first-attempt Forbidden keeps the committed stream."""
+    client = mock.MagicMock()
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      raise api_exceptions.PermissionDenied("permission denied")
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert not processor._offset_desynced
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 0
+    assert processor.get_drop_stats()["permission_denied"] == 2
+    create_stream.assert_not_awaited()
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("already_exists_in_band", [False, True])

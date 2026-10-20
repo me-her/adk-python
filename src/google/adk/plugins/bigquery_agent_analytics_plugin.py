@@ -598,6 +598,7 @@ def _safe_callback(
 _GRPC_DEADLINE_EXCEEDED = 4
 _GRPC_NOT_FOUND = 5
 _GRPC_ALREADY_EXISTS = 6
+_GRPC_PERMISSION_DENIED = 7
 _GRPC_OUT_OF_RANGE = 11
 _GRPC_INTERNAL = 13
 _GRPC_UNAVAILABLE = 14
@@ -3159,6 +3160,8 @@ class BatchProcessor:
         "shutdown_timeout": 0,
         "shutdown_cancelled": 0,
         "offset_conflict": 0,
+        "permission_denied": 0,
+        "not_found": 0,
     }
 
   def _record_drop(self, reason: str, count: int = 1) -> int:
@@ -3254,6 +3257,13 @@ class BatchProcessor:
         cancelled from outside (e.g. a host close timeout).
       ``offset_conflict``: a committed stream rejected its offset, or a
         replacement stream could not be created before the next batch.
+      ``permission_denied``: BigQuery Write API rejected the append due to
+        missing write permission (HTTP 403 / gRPC PERMISSION_DENIED).
+      ``not_found``: BigQuery Write API reported that the destination table,
+        dataset, or stream was not found (HTTP 404 / gRPC NOT_FOUND). Only
+        recorded in default stream mode; in ``exactly_once_delivery`` mode,
+        a NOT_FOUND is treated as an offset conflict and counted under
+        ``offset_conflict``.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -3604,6 +3614,30 @@ class BatchProcessor:
                   self._desync_stream()
                   self._record_drop("offset_conflict", len(rows))
                   return
+              if error_code == _GRPC_PERMISSION_DENIED:
+                logger.error(
+                    "BigQuery Write API permission denied: %s. %d row(s)"
+                    " dropped.",
+                    error_message,
+                    len(rows),
+                )
+                if self.exactly_once_delivery and had_ambiguous_send:
+                  self._desync_stream()
+                self._record_drop("permission_denied", len(rows))
+                return
+              # In exactly_once_delivery mode, _GRPC_NOT_FOUND is already
+              # handled above as an offset_conflict, so this not_found
+              # branch only executes in default stream mode, where
+              # committed-stream rotation (_desync_stream) does not apply.
+              if error_code == _GRPC_NOT_FOUND:
+                logger.error(
+                    "BigQuery Write API stream or table not found: %s. %d"
+                    " row(s) dropped.",
+                    error_message,
+                    len(rows),
+                )
+                self._record_drop("not_found", len(rows))
+                return
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
                   _GRPC_INTERNAL,
@@ -3653,6 +3687,14 @@ class BatchProcessor:
         self._record_drop("unexpected_error", len(rows))
         logger.error("Unexpected BigQuery Write API error: %s", e)
         return
+      except api_exceptions.Forbidden as e:
+        if self.exactly_once_delivery and had_ambiguous_send:
+          self._desync_stream()
+        self._record_drop("permission_denied", len(rows))
+        logger.error(
+            "BigQuery Write API permission denied (Dropping batch): %s", e
+        )
+        return
       except (api_exceptions.NotFound, api_exceptions.OutOfRange) as e:
         if self.exactly_once_delivery:
           self._desync_stream()
@@ -3660,6 +3702,14 @@ class BatchProcessor:
           logger.warning(
               "BigQuery committed stream rejected offset %s: %s",
               offset_for_batch,
+              e,
+          )
+          return
+        if isinstance(e, api_exceptions.NotFound):
+          self._record_drop("not_found", len(rows))
+          logger.error(
+              "BigQuery Write API stream or table not found (Dropping"
+              " batch): %s",
               e,
           )
           return
