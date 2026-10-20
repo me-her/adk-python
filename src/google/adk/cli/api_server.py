@@ -892,7 +892,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
-        " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
+        " telemetry will be disabled. Make sure to install google-adk[otel]"
     )
   if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     # Set up HTTPX and gRPC instrumentation for A2A multi-agent observability.
@@ -903,7 +903,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
     except (ImportError, AttributeError):
       logger.warning(
           "telemetry enabled but proceeding without HTTPX instrumentation,"
-          " because google-adk[otel-gcp] has not been installed"
+          " because google-adk[otel] has not been installed"
       )
     try:
       from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
@@ -912,7 +912,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
     except (ImportError, AttributeError):
       logger.warning(
           "telemetry enabled but proceeding without gRPC instrumentation,"
-          " because google-adk[otel-gcp] has not been installed"
+          " because google-adk[otel] has not been installed"
       )
 
 

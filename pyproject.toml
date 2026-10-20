@@ -296,15 +296,20 @@ optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
+# OpenTelemetry export and instrumentation for ADK.
 optional-dependencies.openai = [ "openai>=2.20,<3" ]
 optional-dependencies.opensandbox = [
   "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
 ]
-optional-dependencies.otel-gcp = [
+optional-dependencies.otel = [
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
+# Incorrectly-named extra - never included anything GCP-specific.
+# Kept as a backward-compatible alias.
+optional-dependencies.otel-gcp = [ "google-adk[otel]" ]
 optional-dependencies.redis = [
   "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
 ]
