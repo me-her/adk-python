@@ -20,6 +20,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
 * [ManagedAgent](agents/managed_agent/index.md) - Guide on using ManagedAgent with server-side tools.
 * [RemoteA2aAgent Task Mode](agents/remote_a2a_agent/task.md) - Guide on using RemoteA2aAgent in task mode.
+* [RunConfig](agents/run_config/index.md) - Per-invocation streaming, concurrency, session window, telemetry, and live audio settings.
 
 ### Apps
 * [App](apps/app/index.md) - The top-level container binding a root agent to app-wide plugins and configuration.

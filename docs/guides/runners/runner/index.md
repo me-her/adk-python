@@ -124,11 +124,11 @@ Arguments passed per-invocation to `runner.run_async(...)`:
 
 ### RunConfig Options
 
-Passed per-invocation to `runner.run_async(..., run_config=RunConfig(...))`:
+Passed per-invocation to `runner.run_async(..., run_config=RunConfig(...))`. See [RunConfig](../../agents/run_config/index.md) for the full configuration reference, including `StreamingMode` and `ToolThreadPoolConfig`:
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `custom_metadata` | `dict[str, Any] \| None` | `None` | Custom metadata keys attached to `InvocationContext`. |
+| `custom_metadata` | `dict[str, Any] \| None` | `None` | Caller metadata copied onto `InvocationContext`, merged into emitted events, and persisted to the session. |
 | `get_session_config` | `GetSessionConfig \| None` | `None` | Fine-grained session retrieval and event window loading configuration. |
 | `model_input_context` | `list[types.Content] \| None` | `None` | Transient unpersisted context added to model input for the current invocation. |
 | `max_llm_calls` | `int` | `500` | Maximum limit on LLM calls per run execution. |

@@ -106,7 +106,7 @@ sequenceDiagram
 
 ### RunConfig Live Options
 
-Configured via `run_config=RunConfig(...)`:
+Configured via `run_config=RunConfig(...)`; see [RunConfig](../../agents/run_config/index.md) for all live audio, transcription, VAD, and thread-pool options:
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
