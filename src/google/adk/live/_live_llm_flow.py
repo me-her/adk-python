@@ -200,8 +200,8 @@ async def send_to_model(
           content.parts and all(p.function_response for p in content.parts)
       )
       if not is_only_function_responses:
-        if blocked_event := await flow._screen_live_user_content(
-            invocation_context, content, llm_request
+        if blocked_event := await screen_live_user_content(
+            flow, invocation_context, content, llm_request
         ):
           await invocation_context._enqueue_event(blocked_event)
           continue
@@ -300,7 +300,8 @@ async def receive_from_model(
               return
 
         async with Aclosing(
-            flow._postprocess_live(
+            postprocess_live_flow(
+                flow,
                 invocation_context,
                 llm_request,
                 llm_response,
@@ -340,7 +341,8 @@ async def receive_from_model(
                   )
               ],
           )
-          if blocked_event := await flow._screen_live_user_content(
+          if blocked_event := await screen_live_user_content(
+              flow,
               invocation_context,
               spoken_content,
               llm_request,
@@ -609,8 +611,8 @@ async def run_live_flow(
               )
 
           send_task = asyncio.create_task(
-              flow._send_to_model(
-                  llm_connection, invocation_context, llm_request
+              send_to_model(
+                  flow, llm_connection, invocation_context, llm_request
               )
           )
 
@@ -618,7 +620,8 @@ async def run_live_flow(
           reconnect_mode = None
           try:
             async with Aclosing(
-                flow._receive_from_model(
+                receive_from_model(
+                    flow,
                     llm_connection,
                     invocation_context,
                     llm_request,
@@ -645,9 +648,9 @@ async def run_live_flow(
                     )
                   live_request_queue.send_content(event.content)
                 # We handle agent transfer here in `run_live` rather than
-                # in `_postprocess_live` to prevent duplication of function
+                # in `postprocess_live_flow` to prevent duplication of function
                 # response processing. If agent transfer were handled in
-                # `_postprocess_live`, events yielded from child agent's
+                # `postprocess_live_flow`, events yielded from child agent's
                 # `run_live` would bubble up to parent agent's `run_live`,
                 # causing `event.get_function_responses()` to be true in both
                 # child and parent, and `send_content()` to be called twice for

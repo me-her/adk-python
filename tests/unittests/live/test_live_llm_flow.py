@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for _live_llm_flow helper module and its BaseLlmFlow shims."""
+"""Unit tests for the _live_llm_flow helper module."""
 
 from __future__ import annotations
 
@@ -331,25 +331,6 @@ async def test_screen_live_user_content_returns_blocked_event():
   assert blocked_event is not None
   assert blocked_event.turn_complete is True
   assert blocked_event.content == blocked_response.content
-
-
-async def test_base_llm_flow_forwarding_shims():
-  """BaseLlmFlow shims delegate to _live_llm_flow while preserving caller interface."""
-  flow = _TestBaseLlmFlow()
-  context = _create_test_context(live_request_queue=LiveRequestQueue())
-  update = types.LiveServerSessionResumptionUpdate(new_handle='shim-handle')
-  response = LlmResponse(live_session_resumption_update=update)
-  event = Event(id='e-shim', invocation_id=context.invocation_id)
-
-  events = [
-      e
-      async for e in flow._postprocess_live(
-          context, LlmRequest(), response, event
-      )
-  ]
-
-  assert len(events) == 1
-  assert events[0].live_session_resumption_update == update
 
 
 async def test_stop_background_tool_tasks_uses_timeout():
