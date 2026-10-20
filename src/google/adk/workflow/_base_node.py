@@ -28,6 +28,7 @@ from pydantic import field_validator
 
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_node_data
+from ..utils._sync_runner import _use_sync_callable_context
 from ._errors import WorkflowConfigurationError
 from ._retry_config import RetryConfig
 
@@ -191,9 +192,16 @@ class BaseNode(BaseModel, abc.ABC):
     from ..events.request_input import RequestInput
     from ..utils.context_utils import Aclosing
 
+    _sentinel = object()
     node_input = self._validate_input_data(node_input)
     async with Aclosing(self._run_impl(ctx=ctx, node_input=node_input)) as agen:
-      async for item in agen:
+      while True:
+        # Bind per step rather than across yield so async-generator suspension
+        # never leaks or cross-resets ContextVar tokens in the caller task.
+        with _use_sync_callable_context(ctx):
+          item = await anext(agen, _sentinel)
+        if item is _sentinel:
+          break
         if item is None:
           continue
         if isinstance(item, Event):
