@@ -252,6 +252,27 @@ class TestMtlsUtils:
         == "https://iam.mtls.googleapis.com/v1/token?foo=bar"
     )
 
+  @pytest.mark.parametrize(
+      "url, expected",
+      [
+          (
+              "https://bigquery.mtls.googleapis.com/mcp",
+              "https://bigquery.googleapis.com/mcp",
+          ),
+          (
+              "https://iam.mtls.googleapis.com:443/v1/token?foo=bar",
+              "https://iam.googleapis.com:443/v1/token?foo=bar",
+          ),
+          (
+              "https://bigquery.googleapis.com/mcp",
+              "https://bigquery.googleapis.com/mcp",
+          ),
+          ("https://example.com/mcp", "https://example.com/mcp"),
+      ],
+  )
+  def test_plain_googleapis_url(self, url, expected):
+    assert _mtls_utils.plain_googleapis_url(url) == expected
+
   @patch("google.auth.transport.mtls.has_default_client_cert_source")
   @patch("google.auth.transport._mtls_helper.get_client_cert_and_key")
   @patch("google.auth.transport.requests._MutualTlsAdapter")

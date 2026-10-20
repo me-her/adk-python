@@ -167,6 +167,22 @@ def effective_googleapis_endpoint(url: str) -> str:
   )
 
 
+def plain_googleapis_url(url: str) -> str:
+  """Rewrites a *.mtls.googleapis.com url to its plain *.googleapis.com variant.
+
+  Other urls are returned unchanged.
+  """
+  parsed = urlsplit(url)
+  host = parsed.hostname or ""
+  if not host.endswith(_MTLS_GOOGLEAPIS_SUFFIX):
+    return url
+  new_host = host[: -len(_MTLS_GOOGLEAPIS_SUFFIX)] + _GOOGLEAPIS_SUFFIX
+  netloc = f"{new_host}:{parsed.port}" if parsed.port else new_host
+  return urlunsplit(
+      (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+  )
+
+
 def configure_session_for_mtls(session: requests.Session) -> bool:
   """Mounts a mutual-TLS adapter on a requests session when a client cert exists.
 
