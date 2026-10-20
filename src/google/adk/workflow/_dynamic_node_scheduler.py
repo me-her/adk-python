@@ -68,6 +68,12 @@ class DynamicNodeRun:
   output: Any = None
   """The final output of the node once it completes."""
 
+  route: Any = None
+  """The route selected by the node once it completes."""
+
+  branch: str | None = None
+  """The branch of the node once it completes."""
+
   task: asyncio.Task[Context] | None = None
   """The running asyncio Task, or None for a run replayed from cache."""
 
@@ -521,6 +527,7 @@ class DynamicNodeScheduler:
         )
         # Sync output and transfer decisions with the current run state.
         run.output = result.output
+        run.route = result.route
         run.transfer_to_agent = result.transfer_to_agent
 
       if run.is_static:
@@ -542,7 +549,10 @@ class DynamicNodeScheduler:
           result=result,
           ancestors=ancestors,
           node_path=node_path,
-          branch=(run.recovered_state.branch if run.recovered_state else None),
+          branch=(
+              run.branch
+              or (run.recovered_state.branch if run.recovered_state else None)
+          ),
       )
 
       # Chronological sequence barrier wait for replayed dynamic nodes
@@ -701,6 +711,8 @@ class DynamicNodeScheduler:
   ) -> None:
     """Update dynamic node state after execution."""
     state = run.state
+    run.route = child_ctx.route
+    run.branch = child_ctx.branch
     if child_ctx.error:
       state.status = NodeStatus.FAILED
     elif child_ctx.interrupt_ids:

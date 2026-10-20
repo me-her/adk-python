@@ -407,14 +407,9 @@ def _reconstruct_node_states(
       # node's output rides on the response event, which carries an error
       # code for any finish reason other than STOP, and that node did
       # produce a result.
-      has_result = has_output or (
-          event.actions is not None
-          and (
-              event.actions.route is not None
-              or event.actions.transfer_to_agent is not None
-          )
-      )
-      if has_result or (event.error_code is None and not event.partial):
+      if _event_has_result(event) or (
+          event.error_code is None and not event.partial
+      ):
         child.error_code = None
       elif event.error_code is not None:
         child.error_code = event.error_code
@@ -443,6 +438,25 @@ def _reconstruct_node_states(
       )
 
   return scan_states
+
+
+def _event_has_result(event: Event) -> bool:
+  """Returns whether ``event`` carries a node output, route, or transfer."""
+  return (
+      event.output is not None
+      or bool(
+          event.node_info
+          and event.node_info.message_as_output
+          and event.content is not None
+      )
+      or bool(
+          event.actions
+          and (
+              event.actions.route is not None
+              or event.actions.transfer_to_agent is not None
+          )
+      )
+  )
 
 
 def is_terminal_event(event: Event) -> bool:
