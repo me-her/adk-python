@@ -2321,7 +2321,10 @@ class SkillToolset(BaseToolset):
     if not activated_skills:
       return []
 
-    additional_tool_names = set()
+    # Insertion-ordered so a newly activated skill appends its tools after the
+    # ones earlier turns already declared; reordering the declarations would
+    # change the request prefix and invalidate the model's prompt cache.
+    additional_tool_names: dict[str, None] = {}
     for skill_name in activated_skills:
       skill = await self._get_or_fetch_skill(
           skill_name, readonly_context.invocation_id
@@ -2331,7 +2334,7 @@ class SkillToolset(BaseToolset):
             "adk_additional_tools"
         )
         if additional_tools:
-          additional_tool_names.update(additional_tools)
+          additional_tool_names.update(dict.fromkeys(additional_tools))
 
     if not additional_tool_names:
       return []
