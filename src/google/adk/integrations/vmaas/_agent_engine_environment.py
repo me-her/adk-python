@@ -279,13 +279,19 @@ class AgentEngineEnvironment(BaseEnvironment):
             )
             await asyncio.sleep(_UNREACHABLE_RETRY_INTERVAL_SECONDS)
             continue
+          raise
         # A paused or resuming sandbox rejects commands: the service answers
         # UNAVAILABLE after it starts resuming a paused sandbox, and
         # FAILED_PRECONDITION while the sandbox is not running. The service
         # also reports some errors from a running sandbox, such as a command
         # timeout, as FAILED_PRECONDITION, so the command is retried only if
-        # the sandbox is not running; otherwise it would run twice.
-        if resumed or (e.code != 503 and e.status != "FAILED_PRECONDITION"):
+        # it did not time out and the sandbox is not running; otherwise it
+        # would run twice.
+        if (
+            resumed
+            or _is_timeout(e)
+            or (e.code != 503 and e.status != "FAILED_PRECONDITION")
+        ):
           raise
         state = await self._manager.get_sandbox_state(sandbox_name)
         if state == _SANDBOX_STATE_RUNNING:

@@ -263,10 +263,14 @@ async def test_timeout_reported_as_failed_precondition_runs_command_once():
   """A timeout reported as FAILED_PRECONDITION is timed out and not retried.
 
   The service reports a command the shell server killed for running too long
-  as FAILED_PRECONDITION with DEADLINE_EXCEEDED in the message.
+  as FAILED_PRECONDITION with DEADLINE_EXCEEDED in the message. Even if the
+  sandbox is no longer running when the timeout returns, the command is not
+  retried and the sandbox state is not queried.
   """
   client = _make_client()
   environment = await _make_environment(client)
+  client.sandboxes.states[environment.sandbox_name] = "STATE_PAUSED"
+  client.sandboxes.get = MagicMock(wraps=client.sandboxes.get)
   client.sandboxes.execute_bash = MagicMock(
       side_effect=ClientError(
           400,
@@ -287,6 +291,8 @@ async def test_timeout_reported_as_failed_precondition_runs_command_once():
 
   assert result.timed_out
   client.sandboxes.execute_bash.assert_called_once()
+  client.sandboxes.get.assert_not_called()
+  assert not client.sandboxes.resume_calls
 
 
 async def test_error_from_running_sandbox_is_raised_without_retry():
@@ -346,16 +352,22 @@ async def test_command_the_sandbox_cannot_receive_yet_is_resent(monkeypatch):
 
 
 async def test_sandbox_that_stays_unreachable_raises(monkeypatch):
-  """A sandbox the service cannot reach for too long raises."""
+  """A sandbox the service cannot reach for too long raises without resuming."""
   monkeypatch.setattr(
       _agent_engine_environment, "_UNREACHABLE_RETRY_SECONDS", 0
   )
   client = _make_client()
   environment = await _make_environment(client)
+  client.sandboxes.states[environment.sandbox_name] = "STATE_PAUSED"
+  client.sandboxes.get = MagicMock(wraps=client.sandboxes.get)
   client.sandboxes.execute_bash = MagicMock(side_effect=_unreachable_error())
 
   with pytest.raises(ClientError, match="Unable to reach"):
     await environment.execute("echo hi")
+
+  client.sandboxes.execute_bash.assert_called_once()
+  client.sandboxes.get.assert_not_called()
+  assert not client.sandboxes.resume_calls
 
 
 async def test_execute_on_paused_sandbox_resumes_and_runs():
