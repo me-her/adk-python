@@ -302,7 +302,7 @@ class AgentTool(BaseTool):
     if nested_run_config is not None and nested_run_config.support_cfc:
       # CFC describes how the caller's own model executes. Handing it to
       # another agent replaces that agent's code executor and refuses to run it
-      # at all unless its model happens to be a Gemini 2 one.
+      # at all unless its model is a Gemini model with live-API support.
       nested_run_config = nested_run_config.model_copy(
           update={'support_cfc': False}
       )

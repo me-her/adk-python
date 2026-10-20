@@ -49,6 +49,7 @@ from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
+from google.adk.models.google_llm import Gemini
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -6824,6 +6825,107 @@ async def test_run_async_paused_single_turn_agent_returns_turn_to_delegator(
   assert "Helper chatting" not in _texts([e.content for e in second + third])
   assert _texts([e.content for e in third]) == ["Root thanks"]
   assert {e.author for e in third if e.content} == {"root_agent"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "gemini-4.0-flash",
+        "projects/p/locations/us-central1/publishers/google/models/gemini-3.5-flash",
+    ],
+)
+async def test_cfc_is_supported_on_gemini_models(model):
+  """Tests that CFC accepts gemini-* ids, bare and as a Vertex publisher path."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(name="test_agent", model=model),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  invocation_context = runner._new_invocation_context(
+      session, run_config=RunConfig(support_cfc=True)
+  )
+
+  assert invocation_context.run_config.support_cfc
+
+
+@pytest.mark.asyncio
+async def test_cfc_is_rejected_on_non_gemini_models():
+  """Tests that CFC is refused for a model that is not Gemini."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(
+          name="test_agent", model=testing_utils.MockModel.create(responses=[])
+      ),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  with pytest.raises(ValueError, match="CFC is not supported"):
+    runner._new_invocation_context(
+        session, run_config=RunConfig(support_cfc=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_cfc_is_rejected_on_gemini_model_without_live_support():
+  """Tests that a Gemini-named model that cannot connect is refused."""
+  from google.adk.models.lite_llm import LiteLlm
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(
+          name="test_agent", model=LiteLlm(model="gemini/gemini-2.5-flash")
+      ),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  with pytest.raises(ValueError, match="CFC is not supported"):
+    runner._new_invocation_context(
+        session, run_config=RunConfig(support_cfc=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_cfc_is_supported_on_endpoint_id_when_check_disabled(monkeypatch):
+  """Tests that ADK_DISABLE_GEMINI_MODEL_ID_CHECK unblocks endpoint ids."""
+  monkeypatch.setenv("ADK_DISABLE_GEMINI_MODEL_ID_CHECK", "true")
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(
+          name="test_agent",
+          model=Gemini(model="projects/p/locations/us-central1/endpoints/123"),
+      ),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  invocation_context = runner._new_invocation_context(
+      session, run_config=RunConfig(support_cfc=True)
+  )
+
+  assert invocation_context.run_config.support_cfc
 
 
 if __name__ == "__main__":

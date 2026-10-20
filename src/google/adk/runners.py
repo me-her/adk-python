@@ -68,6 +68,8 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
+from .utils.model_name_utils import is_gemini_model
+from .utils.model_name_utils import is_gemini_model_id_check_disabled
 from .workflow._base_node import _walk_static_nodes
 from .workflow._base_node import BaseNode
 
@@ -2158,13 +2160,20 @@ class Runner:
 
     if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       from .agents.llm_agent import LlmAgent
+      from .models.base_llm import BaseLlm
 
       cfc_agent = cast(LlmAgent, self.agent)
-      model_name = cfc_agent.canonical_model.model
-      if not model_name.startswith('gemini-2'):
+      canonical_model = cfc_agent.canonical_model
+      model_name = canonical_model.model
+      # CFC is served over the live API, so the model must implement connect.
+      supports_cfc = type(canonical_model).connect is not BaseLlm.connect and (
+          is_gemini_model(model_name) or is_gemini_model_id_check_disabled()
+      )
+      if not supports_cfc:
         raise ValueError(
             f'CFC is not supported for model: {model_name} in agent:'
-            f' {cfc_agent.name}'
+            f' {cfc_agent.name}. CFC requires a Gemini model served over the'
+            ' live API, so the model class must implement connect.'
         )
 
     return self._create_invocation_context(
