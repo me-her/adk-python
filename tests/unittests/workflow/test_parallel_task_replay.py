@@ -40,6 +40,63 @@ import pytest
 from . import testing_utils
 
 
+@pytest.mark.parametrize('explicit_group', [False, True])
+async def test_legacy_worker_preserves_event_metadata_and_outer_ownership(
+    explicit_group: bool,
+):
+  """Legacy workers add no task identity and inherit any public task owner."""
+  owner_ids = []
+  captured = []
+
+  @node(parallel_worker=True, max_parallel_workers=1)
+  async def worker(node_input: str) -> AsyncGenerator[Event, None]:
+    yield Event(
+        output=f'{node_input}_processed',
+        custom_metadata={'source': node_input},
+    )
+
+  def produce() -> list[str]:
+    return ['first', 'second']
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> list[str]:
+    async with ctx.parallel_tasks() as tasks:
+      task = tasks.spawn(worker, produce())
+      owner_ids.append(task.id)
+      return await task.result()
+
+  def capture(node_input: list[str]) -> list[str]:
+    captured.append(node_input)
+    return node_input
+
+  workflow = Workflow(
+      name='legacy_metadata',
+      edges=[
+          (START, coordinate, capture)
+          if explicit_group
+          else (START, produce, worker, capture)
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(node=workflow)
+  try:
+    events = await runner.run_async('start')
+    worker_events = [
+        event for event in events if 'source' in (event.custom_metadata or {})
+    ]
+    assert len(worker_events) == 2
+    assert captured == [['first_processed', 'second_processed']]
+    for event in worker_events:
+      expected = {'source': event.output.removesuffix('_processed')}
+      if explicit_group:
+        expected.update({
+            'parallel_task': {'task_id': owner_ids[0], 'status': 'running'},
+            '__adk_internal_parallel_task_owners': owner_ids,
+        })
+      assert event.custom_metadata == expected
+  finally:
+    await runner.runner.close()
+
+
 @pytest.mark.parametrize('is_resumable', [False, True])
 @pytest.mark.parametrize('nested_group', [False, True])
 async def test_cancelled_transfer_to_foreign_scheduler_does_not_block_resume(

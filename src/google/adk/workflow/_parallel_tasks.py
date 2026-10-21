@@ -21,6 +21,7 @@ import base64
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
+from contextlib import nullcontext
 import copy
 import inspect
 import logging
@@ -695,7 +696,13 @@ class ParallelTasks:
 
   async def _execute(self, task: ParallelTask) -> None:
     try:
-      with _bind_parallel_task(task._control):
+      # Legacy workers preserve their event format while inheriting any outer
+      # public task's ownership, including cancellation and transfer tracking.
+      with (
+          nullcontext()
+          if self._legacy_run_ids
+          else _bind_parallel_task(task._control)
+      ):
         child = await self._ctx._run_node_internal(
             task._node,
             task._input,
