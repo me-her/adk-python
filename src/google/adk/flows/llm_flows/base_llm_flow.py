@@ -55,6 +55,7 @@ from .core._utils import as_llm_agent as _as_llm_agent
 from .core._utils import copy_http_options
 from .core._utils import require_run_config as _require_run_config
 from .prompt import _dynamic_instructions
+from .prompt import _schema as _output_schema_processor
 from .tools import _agent_tools
 from .tools import _toolset_auth
 
@@ -404,8 +405,24 @@ class BaseLlmFlow(ABC):
             yield event
 
   async def _preprocess_async(
-      self, invocation_context: InvocationContext, llm_request: LlmRequest
+      self,
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      *,
+      live: bool = False,
   ) -> AsyncGenerator[Event, None]:
+    """Runs the request processors to assemble `llm_request`.
+
+    Args:
+      invocation_context: The invocation context.
+      llm_request: The request to populate.
+      live: Whether the request opens a live session. Live does not support
+        `output_schema`, so the output schema processor is skipped rather than
+        adding a `set_model_response` tool whose result nothing consumes.
+
+    Yields:
+      Events emitted by the request processors.
+    """
     agent = _as_llm_agent(invocation_context)
     if not hasattr(agent, 'tools') or not hasattr(agent, 'canonical_model'):
       raise TypeError(
@@ -426,6 +443,11 @@ class BaseLlmFlow(ABC):
 
     # Runs request processors followed by tool-resolution request processors.
     for processor in self._iter_request_processors():
+      if (
+          live
+          and processor.name == _output_schema_processor.request_processor.name
+      ):
+        continue
       async with Aclosing(
           processor.run_async(invocation_context, llm_request)
       ) as agen:

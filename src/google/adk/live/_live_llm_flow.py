@@ -32,7 +32,6 @@ from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
 from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
-from ..flows.llm_flows.prompt import _schema as _output_schema_processor
 from ..flows.llm_flows.tools import _functions as functions
 from ..models.base_llm_connection import BaseLlmConnection
 from ..models.google_llm import Gemini
@@ -40,6 +39,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..telemetry.tracing import trace_send_data
 from ..telemetry.tracing import tracer
+from ..utils._agent_mode import AgentMode
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from ._flow_utils import _ReconnectMode as _ReconnectMode
@@ -462,22 +462,7 @@ async def postprocess_live_flow(
       # `_postprocess_handle_function_calls_async` does. Without it the live
       # client never receives an `adk_request_confirmation` function call, so
       # it has no call id to approve or reject against.
-      # Always yield the function response event first
       yield function_response_event
-
-      # Check if this is a set_model_response function response
-      if json_response := (
-          _output_schema_processor.get_structured_model_response(
-              function_response_event
-          )
-      ):
-        # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
-            )
-        )
-        yield final_event
 
 
 async def run_live_flow(
@@ -493,7 +478,9 @@ async def run_live_flow(
 
     # Preprocess before calling the LLM.
     async with Aclosing(
-        flow._preprocess_async(invocation_context, llm_request)
+        flow._preprocess_async(  # pylint: disable=protected-access
+            invocation_context, llm_request, live=True
+        )
     ) as agen:
       async for event in agen:
         yield event
@@ -501,6 +488,20 @@ async def run_live_flow(
       return
 
     agent = _as_llm_agent(invocation_context)
+    # A live session has no final response to structure, and the connect
+    # config carries no `response_schema`, so `output_schema` has no effect
+    # here. Task mode is exempt: it collects structured output through
+    # `finish_task`.
+    if (
+        getattr(agent, 'output_schema', None)
+        and getattr(agent, 'mode', None) != AgentMode.TASK
+    ):
+      logger.warning(
+          'Agent %s sets output_schema, which is not supported in live mode'
+          ' and will be ignored. To capture structured data during a live'
+          ' session, give the agent a tool that writes it to session state.',
+          agent.name,
+      )
     live_request_queue = require_live_request_queue(invocation_context)
     llm_request.model = agent.canonical_live_model.model
 

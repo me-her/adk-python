@@ -39,6 +39,7 @@ from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.core._utils import copy_http_options
+from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequestQueue
 from google.adk.live._flow_utils import _ReconnectSentinel
@@ -54,6 +55,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.adk.utils.context_utils import Aclosing
@@ -61,6 +63,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.errors import APIError
 import httpx
+from pydantic import BaseModel
 import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -208,6 +211,47 @@ async def test_preprocess_with_google_search_only():
 
   assert len(llm_request.config.tools) == 1
   assert llm_request.config.tools[0].google_search is not None
+
+
+class _WeatherReport(BaseModel):
+  city: str
+
+
+def _get_weather(city: str) -> str:
+  """Returns the weather in a city.
+
+  Args:
+    city: The city name.
+  """
+  return f'Sunny in {city}.'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('live', 'expect_set_model_response'), [(False, True), (True, False)]
+)
+async def test_preprocess_adds_set_model_response_only_when_not_live(
+    live, expect_set_model_response
+):
+  """The output schema processor runs for non-live requests only."""
+  agent = Agent(
+      name='test_agent',
+      model=testing_utils.MockModel.create([]),
+      tools=[_get_weather],
+      output_schema=_WeatherReport,
+  )
+  invocation_context = await testing_utils.create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  flow = SingleFlow()
+  async for _ in flow._preprocess_async(  # pylint: disable=protected-access
+      invocation_context, llm_request, live=live
+  ):
+    pass
+
+  assert (
+      SetModelResponseTool.NAME in llm_request.tools_dict
+  ) == expect_set_model_response
 
 
 @pytest.mark.asyncio
@@ -815,7 +859,7 @@ async def test_reconnect_does_not_write_the_handle_into_the_run_config():
   # builder has to run for the RunConfig to reach the live connect config at
   # all. Without it the flow just creates a fresh SessionResumptionConfig and
   # the aliasing under test never happens.
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
     _build_basic_request(ctx, req)
@@ -884,7 +928,7 @@ async def test_run_live_skips_send_history_on_resumption():
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     if False:
       yield
@@ -924,7 +968,7 @@ async def test_run_live_skips_send_history_on_resumption():
         mock_connection.send_history.assert_not_called()
 
 
-async def _mock_preprocess_basic(ctx, req):
+async def _mock_preprocess_basic(ctx, req, **_):
   """Preprocess stub that runs only the real live connect config assembly.
 
   `BaseLlmFlow` carries no request processors of its own, so without this the
@@ -938,7 +982,7 @@ async def _mock_preprocess_basic(ctx, req):
     yield
 
 
-async def _mock_preprocess_with_history(ctx, req):
+async def _mock_preprocess_with_history(ctx, req, **_):
   """Preprocess stub that seeds history and builds the live connect config."""
   from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -2169,7 +2213,7 @@ async def test_run_live_reconnect_does_not_set_transparent():
       _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ):
 
-    async def mock_preprocess(ctx, req):
+    async def mock_preprocess(ctx, req, **_):
       req.live_connect_config.session_resumption = (
           ctx.run_config.session_resumption
       )
@@ -2243,7 +2287,7 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
       _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ):
 
-    async def mock_preprocess(ctx, req):
+    async def mock_preprocess(ctx, req, **_):
       req.live_connect_config.session_resumption = (
           ctx.run_config.session_resumption
       )
@@ -2308,7 +2352,7 @@ async def test_run_live_history_config_set_for_all_backends(api_backend):
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -2382,7 +2426,7 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -3135,7 +3179,7 @@ async def test_preprocess_final_response_skips_llm_call():
   )
   function_response_event.actions.skip_summarization = True
 
-  async def mock_preprocess(_ctx, _request):
+  async def mock_preprocess(_ctx, _request, **_):
     yield function_response_event
 
   async def fail_if_llm_called(*_args, **_kwargs):
@@ -3192,7 +3236,7 @@ async def test_preprocess_non_function_response_does_not_skip_llm_call():
   )
   assert processing_file_event.is_final_response()
 
-  async def mock_preprocess(_ctx, _request):
+  async def mock_preprocess(_ctx, _request, **_):
     yield processing_file_event
 
   with mock.patch.object(
