@@ -135,6 +135,14 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Tools
 * [FunctionTool](tools/function_tool/index.md) - Wrapping Python functions and generators as agent tools with argument validation, progress streaming, and confirmation.
+* [Using Context in a tool](tools/tool_context/index.md) - Reaching session state, artifacts, memory, and credentials from inside a tool.
+* [BaseTool](tools/base_tool/index.md) - Subclassing the tool base class to write a declaration yourself or to change the model request.
+* [BaseToolset](tools/base_toolset/index.md) - Giving an agent a group of tools that ADK asks for on every run, and filtering which ones the model sees.
+* [LongRunningFunctionTool](tools/long_running_tool/index.md) - Tools whose result arrives later, such as an approval or a batch job, and how to send that result back.
+* [ToolConfirmation](tools/tool_confirmation/index.md) - Pausing a tool call until a person approves it, and passing their answer back to the agent.
+* [AgentTool](tools/agent_tool/index.md) - Calling another agent as a tool in a separate session, and how that compares with a single-turn sub-agent.
+* [McpToolset](tools/mcp_tool/mcp_toolset/index.md) - Connecting an agent to a Model Context Protocol server and using the tools it publishes.
+* [SkillToolset](tools/skill_toolset/index.md) - Giving an agent skills that it loads only when a request calls for them.
 * [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
