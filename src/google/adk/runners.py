@@ -1550,7 +1550,11 @@ class Runner:
       if output_event.partial is not True and self._should_append_event(
           output_event, is_live_call
       ):
-        logger.debug('Appending live event: %s', output_event)
+        logger.debug(
+            'Appending live event: %s, author: %s',
+            output_event.id,
+            output_event.author,
+        )
         await self.session_service.append_event(
             session=invocation_context.session, event=output_event
         )
