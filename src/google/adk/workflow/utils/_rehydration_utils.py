@@ -32,6 +32,7 @@ from ...events._interrupts import extract_event_interrupt_ids
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from ...flows.llm_flows.tools._functions import _collect_function_call_ids
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from .._errors import WorkflowDataError
 
@@ -69,7 +70,7 @@ class _ChildScanState:
   """The route the child picked, or None if it picked none."""
 
   branch: str | None = None
-  """The branch carried by the output event, filled in alongside ``output``."""
+  """The branch seen on the child's own non-claimed events, if any."""
 
   isolation_scope: str | None = None
   """The isolation scope seen on the child's events, if any."""
@@ -292,6 +293,7 @@ def _reconstruct_node_states(
         return base_path
       return None
 
+  tool_call_ids = _collect_function_call_ids(events)
   for event in events:
     if invocation_id and event.invocation_id != invocation_id:
       continue
@@ -355,8 +357,8 @@ def _reconstruct_node_states(
       continue
 
     # 3. Initialize state for the owner if needed
+    owner_path_builder = _NodePathBuilder.from_string(owner_key)
     if owner_key not in scan_states:
-      owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
     # 4. Determine if event is direct child or delegated output
@@ -369,6 +371,24 @@ def _reconstruct_node_states(
     child = scan_states[owner_key]
     if is_direct and event.isolation_scope:
       child.isolation_scope = event.isolation_scope
+    has_claimed_branch = (
+        event.output is not None
+        and len(event.node_info.output_for or ()) > 1
+        and not event.get_function_responses()
+    )
+    is_tool_branch = bool(
+        event.branch
+        and _BranchPath.is_tool_branch(
+            event.branch, owner_path_builder.node_name, tool_call_ids
+        )
+    )
+    if (
+        is_direct
+        and event.branch
+        and not has_claimed_branch
+        and not is_tool_branch
+    ):
+      child.branch = event.branch
 
     has_output = event.output is not None
     use_message_as_output = False
@@ -393,7 +413,8 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        child.branch = event.branch
+        if is_direct and not has_claimed_branch and not is_tool_branch:
+          child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content
       if event.actions and event.actions.route is not None:

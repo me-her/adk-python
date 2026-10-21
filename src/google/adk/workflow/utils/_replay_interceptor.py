@@ -198,8 +198,8 @@ def create_mock_context(
 ) -> Context:
   """Build a Context with cached results (no execution)."""
   ic = parent_ctx._invocation_context  # pylint: disable=protected-access
-  if branch:
-    ic = ic.model_copy(update={"branch": branch})
+  if branch is not None:
+    ic = ic.model_copy(update={"branch": branch or None})
 
   mock_ctx = Context(
       ic,
