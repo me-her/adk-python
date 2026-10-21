@@ -24,6 +24,8 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Apps
 * [App](apps/app/index.md) - The top-level container binding a root agent to app-wide plugins and configuration.
+* [EventsCompactionConfig and BaseEventsSummarizer](apps/events_compaction/index.md) - Keeping a long conversation inside the context window by summarizing older events.
+* [ResumabilityConfig](apps/resumability/index.md) - Letting an invocation that paused, such as on a long-running tool call, continue from where it stopped.
 
 ### Artifacts
 * [BaseArtifactService](artifacts/artifact_service/index.md) - Storing binary payloads outside the conversation history, with versioning, user-scoped filenames, and GCS URL generation.
@@ -53,6 +55,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Events
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
+* [EventActions](events/event_actions/index.md) - The part of an event that ADK acts on, such as ending a turn or handing the conversation to another agent.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
 * [Reserved custom_metadata keys](events/internal_metadata/index.md) - The `Event.custom_metadata` keys that only ADK can set, and how restored events are marked.
 
@@ -114,6 +117,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
 * [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
+* [Runner.rewind_async](runners/runner/rewind.md) - Undoing turns of a conversation and restoring state and artifacts to an earlier point.
 
 ### Security
 * [Credentials Encryption](auth/kms_encryptor/index.md) - Securely encrypting sensitive session credentials using Google Cloud KMS.
