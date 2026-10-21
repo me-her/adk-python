@@ -6,7 +6,13 @@
 
 Executing an LLM agent or workflow involves coordinating session storage, artifact management, plugin callbacks, and multi-turn message state. Directly instantiating flows or managing raw session objects mixes execution infrastructure with agent business logic.
 
-`Runner` acts as the execution boundary between external callers and internal ADK agent trees. A runner binds a root agent or `App` container to session, memory, artifact, and credential services. It provides standard execution methods (`run_async`, `run`, `run_live`, `run_debug`) that handle session lookup/creation, user event append, context assembly, plugin hook dispatch, and structured event streaming (`Event`).
+`Runner` acts as the execution boundary between external callers and internal
+ADK agent trees. A runner binds a root agent, workflow node, or `App` container
+to session, memory, artifact, and credential services. It provides standard
+execution and lifecycle methods (`run_async`, `run`, `run_live`, `run_debug`,
+`rewind_async`, and `close`) that handle session lookup and creation, user event
+append, context assembly, plugin hook dispatch, structured event streaming
+(`Event`), session rewind, and resource teardown.
 
 ADK provides `InMemoryRunner` for development with built-in in-memory session and artifact services, while production deployments use `Runner` with persistent services (e.g. database-backed session stores).
 
@@ -70,23 +76,31 @@ sequenceDiagram
     alt Session Not Found & auto_create_session=True
         Runner->>Session: create_session(app_name, user_id, session_id)
     end
-    Runner->>Runner: Append new_message to session events
     Runner->>Runner: Construct InvocationContext & apply RunConfig
+    Runner->>Session: append_event(user message)
     Runner->>Plugins: run_before_run_callback()
     Runner->>Agent: run_async(invocation_context)
     loop Stream Events
         Agent-->>Runner: Yield Event
         Runner->>Plugins: run_on_event_callback()
+        Runner->>Session: append_event(event) unless event.partial
         Runner-->>Caller: Yield Event
     end
     Runner->>Plugins: run_after_run_callback()
-    Runner->>Session: append_events(session_id, new_events)
+    Runner->>Runner: Event compaction, if configured
 ```
 
 1. **Session Resolution & Normalization:** `Runner` normalizes its root target to an `App`. On `run_async`, it retrieves the active `Session` from `session_service` using `app.name`, `user_id`, and `session_id`. If the session is missing and `auto_create_session=True`, a new session is created automatically; otherwise `SessionNotFoundError` is raised.
-2. **Context & Event Ingestion:** The caller's `new_message` is appended as a user `Event`. `Runner` constructs an `InvocationContext` linking session state (`app:`, `user:`, `temp:`), artifact service, memory service, and plugin manager.
+2. **Context & Event Ingestion:** `Runner` constructs an `InvocationContext`
+   linking session state (`app:`, `user:`, `temp:`), artifact service, memory
+   service, and plugin manager, then appends the caller's `new_message` to the
+   session as a user `Event`.
 3. **Execution & Event Streaming:** The runner executes the root agent generator. Generated `Event` instances pass through `PluginManager.run_on_event_callback()` before being yielded to the caller. If `abort_signal` is set during execution, the runner cancels active tasks, emits an `INVOCATION_ABORTED` event, and seals any pending tool calls.
-4. **Session Persistence & Compaction:** Produced events are persisted to `session_service`. If `events_compaction_config` is set on `App`, event compaction runs after iteration completes.
+4. **Session Persistence & Compaction:** Each non-partial event is appended to
+   `session_service` before it is yielded to the caller; partial streaming
+   chunks (`event.partial=True`) are yielded without being persisted. If
+   `events_compaction_config` is set on `App`, event compaction runs after the
+   last event is yielded before the generator finishes.
 
 ## Configuration options
 
@@ -98,13 +112,16 @@ Constructor arguments passed when initializing `Runner(...)` or `InMemoryRunner(
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `app` | `App \| None` | `None` | Recommended entry point: the `App` container binding root agent, plugins, and app-wide configs. |
-| `agent` | `BaseAgent \| None` | `None` | Legacy root agent parameter (wrapped into an `App` internally). Mutually exclusive with `app`. |
-| `app_name` | `str \| None` | `None` | Application name. Optional override for `app.name`. Defaults to `"InMemoryRunner"` for `InMemoryRunner`. |
-| `session_service` | `BaseSessionService` | *(required for Runner)* | Session storage backend for retrieving and persisting conversation sessions. |
-| `memory_service` | `BaseMemoryService \| None` | `None` | Long-term memory backend for cross-session retrieval. |
-| `artifact_service` | `BaseArtifactService \| None` | `None` | Service for storing binary payloads and files outside session events. |
-| `auto_create_session` | `bool` | `False` | Automatically create a new session if `session_id` is not found during `run_async`. |
+| `app` | `App \| None` | `None` | Recommended entry point: the `App` container binding root agent, plugins, and app-wide configs. Mutually exclusive with `agent` and `node`. |
+| `agent` | `BaseAgent \| None` | `None` | Root agent parameter, wrapped into an `App` internally. Mutually exclusive with `app` and `node`. |
+| `node` | `BaseNode \| None` | `None` | Root workflow or node parameter, wrapped into an `App` internally. Mutually exclusive with `app` and `agent`. |
+| `app_name` | `str \| None` | `None` | Application name; optional override for `app.name` when `app` is passed. On `Runner`, required when `agent` is passed and defaults to `node.name` when `node` is passed. On `InMemoryRunner`, defaults to `"InMemoryRunner"` whenever neither `app` nor `app_name` is passed, including with `agent` or `node`. |
+| `session_service` | `BaseSessionService` | *(required for `Runner`)* | Session storage backend for retrieving and persisting conversation sessions. Accepted by `Runner` only; `InMemoryRunner` wires `InMemorySessionService` automatically. |
+| `memory_service` | `BaseMemoryService \| None` | `None` | Long-term memory backend for cross-session retrieval. Accepted by `Runner` only; `InMemoryRunner` wires `InMemoryMemoryService` automatically. |
+| `artifact_service` | `BaseArtifactService \| None` | `None` | Service for storing binary payloads and files outside session events. Accepted by `Runner` only; `InMemoryRunner` wires `InMemoryArtifactService` automatically. |
+| `credential_service` | `BaseCredentialService \| None` | `None` | Service for resolving and persisting tool authentication credentials. Accepted by `Runner` only. |
+| `auto_create_session` | `bool` | `False` | Automatically create a new session if `session_id` is not found during `run_async` or `run_live`. Accepted by `Runner` only, not by `InMemoryRunner`. |
+| `plugin_close_timeout` | `float` | `5.0` | Timeout in seconds when closing plugins during `await runner.close()`. |
 | `plugins` | `list[BasePlugin] \| None` | `None` | Deprecated on `Runner`: pass plugins on `App(plugins=[...])` instead. |
 
 ### `run_async` Options
@@ -155,11 +172,34 @@ runner = Runner(
 
 ### Automatic session creation
 
-By default, calling `runner.run_async` with a non-existent `session_id` raises `SessionNotFoundError`. To automatically create a new session when one is missing without an explicit `create_session` call, set `auto_create_session=True` when instantiating `Runner` or `InMemoryRunner`:
+By default, calling `runner.run_async` with a non-existent `session_id` raises
+`SessionNotFoundError`. To automatically create a new session when one is
+missing without an explicit `create_session` call, set
+`auto_create_session=True` when constructing `Runner`:
 
 ```python
-runner = InMemoryRunner(app=app, auto_create_session=True)
+runner = Runner(
+    app=app,
+    session_service=session_service,
+    auto_create_session=True,
+)
 ```
+
+`InMemoryRunner` does not accept `auto_create_session`, and passing it raises
+`TypeError`. With `InMemoryRunner`, create the session explicitly via
+`runner.session_service.create_session(...)`, or use
+`await runner.run_debug(...)`, which creates or reuses its own debug session.
+
+### Rewinding a session and closing resources
+
+To undo a turn and restore session state and artifacts to the point before a
+specific `invocation_id`, call `await runner.rewind_async(...)` with `user_id`,
+`session_id`, and `rewind_before_invocation_id`.
+
+Both `Runner` and `InMemoryRunner` implement the async context manager protocol
+(`async with runner:`) and `await runner.close()`, which closes active toolsets,
+closes registered plugins within `plugin_close_timeout`, and flushes
+`session_service`.
 
 ## Limitations
 
