@@ -250,6 +250,7 @@ class ParallelTasks:
     self._cancelled_ids: set[str] = set()
     self._winner_id: str | None = None
     self._winner: ParallelTask | None = None
+    self._completed_ids: set[str] = set()
     self._state_snapshot: dict[str, Any] = {}
     self._merged: set[tuple[str, str]] = set()
 
@@ -268,6 +269,7 @@ class ParallelTasks:
       if not isinstance(record, dict) or record.get('group') != self._id:
         continue
       self._cancelled_ids.update(record.get('cancelled', []))
+      self._completed_ids.update(record.get('completed', []))
       for task_id, keys in record.get('merged', {}).items():
         self._merged.update((task_id, key) for key in keys)
       if record.get('winner') is not None:
@@ -339,9 +341,7 @@ class ParallelTasks:
         raise ValueError(f'Duplicate parallel task ID: {task.id}')
       self._ctx._parallel_task_paths.add(task.id)
     self._tasks.append(task)
-    if task.id in self._cancelled_ids or (
-        self._winner_id is not None and task.id != self._winner_id
-    ):
+    if task.id in self._cancelled_ids:
       task._finish('cancelled')
     self._wake.set()
     return task
@@ -436,18 +436,25 @@ class ParallelTasks:
       self,
       accept: Callable[[Any], Any] | None = None,
   ) -> ParallelTask:
-    """Return the first acceptable result after cancelling and draining siblings.
+    """Return an acceptable result after cancelling unfinished siblings.
 
     The predicate receives the output and may be asynchronous. Rejections and
     worker failures allow remaining candidates to continue. Completion ties are
     resolved in spawn order. Raises ValueError when no result is acceptable.
+    Already completed or failed siblings retain their native replay behavior.
+    Retrying after a cleanup timeout still requires unfinished siblings to stop.
     """
     if self._selecting:
       raise RuntimeError('Only one first() selection may run at a time.')
-    if self._winner is not None:
-      return self._winner
     if self._closed:
       raise RuntimeError('The parallel task scope is closed.')
+    if self._winner is not None:
+      await self._drain(
+          [task for task in self._tasks if task.id in self._cancelled_ids],
+          deliberate=True,
+      )
+      await self._restore_completed()
+      return self._winner
     self._selecting = True
     try:
       return await self._first(accept)
@@ -465,6 +472,15 @@ class ParallelTasks:
     )
     seen: set[str] = set()
     try:
+      if self._winner_id is not None:
+        # A failed sibling can retry before the saved winner is admitted. Stop
+        # that retry first so it cannot occupy the winner's bounded slot.
+        await self._record_selection(self._winner_id)
+        await self._drain(
+            [task for task in self._tasks if task.id in self._cancelled_ids],
+            deliberate=True,
+        )
+        self._wake.set()
       while True:
         self._changed.clear()
         self._raise_pump_error()
@@ -481,23 +497,17 @@ class ParallelTasks:
             if inspect.isawaitable(accepted):
               accepted = await accepted
           if accepted:
-            # Pause admission before persisting the decision, which yields to
-            # the Runner and must not admit another candidate in the meantime.
-            self._paused = True
-            async with self._decision_lock:
-              if self._winner_id is None:
-                losers = [
-                    other.id for other in self._tasks if other is not task
-                ]
-                await self._record(cancelled=losers, winner=task.id)
-                self._winner_id = task.id
-                self._cancelled_ids.update(losers)
-              self._winner = task
-              self._paused = True
+            await self._record_selection(task.id)
+            self._winner = task
             await self._drain(
-                [other for other in self._tasks if other is not task],
+                [
+                    other
+                    for other in self._tasks
+                    if other.id in self._cancelled_ids
+                ],
                 deliberate=True,
             )
+            await self._restore_completed()
             return task
         self._decision_pending = any(
             task.status == 'completed' and task.id not in seen
@@ -507,8 +517,13 @@ class ParallelTasks:
         if self._decision_pending:
           continue
         running = any(task.status == 'running' for task in self._tasks)
+        restoring = self._winner_id is not None and any(
+            not task._done.done()
+            and (task.id == self._winner_id or task.id in self._completed_ids)
+            for task in self._tasks
+        )
         if all(task._done.done() for task in self._tasks) or (
-            self._paused and not running
+            self._paused and not running and not restoring
         ):
           waiting = next(
               (task for task in self._tasks if task.status == 'waiting'), None
@@ -523,8 +538,62 @@ class ParallelTasks:
           raise ValueError('No parallel task produced an acceptable result.')
         await self._changed.wait()
     except BaseException:
-      await self._drain(self._tasks, deliberate=False, preserve_error=True)
+      await self._drain(
+          [
+              task
+              for task in self._tasks
+              if self._winner_id is None or task.id in self._cancelled_ids
+          ],
+          deliberate=False,
+          preserve_error=True,
+      )
       raise
+
+  async def _record_selection(self, winner_id: str) -> None:
+    # Pause admission before persistence yields to the Runner. Saved completed
+    # siblings may still hydrate through the same bounded scheduler.
+    self._paused = True
+    async with self._decision_lock:
+      losers = [
+          task.id
+          for task in self._tasks
+          if task.id != winner_id
+          and task.status in {'queued', 'running', 'waiting'}
+          and task.id not in self._completed_ids
+      ]
+      completed = [
+          task.id
+          for task in self._tasks
+          if task.id != winner_id and task.status == 'completed'
+      ]
+      if (
+          self._winner_id is None
+          or any(task_id not in self._cancelled_ids for task_id in losers)
+          or any(task_id not in self._completed_ids for task_id in completed)
+      ):
+        await self._record(
+            cancelled=losers, winner=winner_id, completed=completed
+        )
+        self._winner_id = winner_id
+        self._cancelled_ids.update(losers)
+        self._completed_ids.update(completed)
+
+  async def _restore_completed(self) -> None:
+    """Finish native replay of siblings completed before the saved selection."""
+    while True:
+      self._changed.clear()
+      self._raise_pump_error()
+      for task in self._tasks:
+        if task.id in self._completed_ids and task.status == 'cancelled':
+          await task.result()
+      if all(
+          task._done.done()
+          for task in self._tasks
+          if task.id in self._completed_ids
+      ):
+        return
+      self._wake.set()
+      await self._changed.wait()
 
   async def cancel(self, task: ParallelTask) -> None:
     """Deliberately cancel one owned task and wait for it to stop."""
@@ -534,16 +603,21 @@ class ParallelTasks:
     if self._closed:
       raise RuntimeError('The parallel task scope is closed.')
     async with self._decision_lock:
-      await self._record(cancelled=[task.id])
-      self._cancelled_ids.add(task.id)
-      await self._drain([task], deliberate=True)
-      if self._winner_id is None:
-        self._paused = any(
-            other.status == 'waiting'
-            or (self._fail_fast and other.status == 'failed')
-            for other in self._tasks
-        )
-      self._wake.set()
+      # Completion may have won while this caller waited for another decision.
+      if task.status in {'completed', 'failed', 'cancelled'}:
+        return
+      if task.id not in self._cancelled_ids:
+        await self._record(cancelled=[task.id])
+        self._cancelled_ids.add(task.id)
+    # A finishing worker needs the decision lock to publish its terminal state.
+    await self._drain([task], deliberate=True)
+    if self._winner_id is None:
+      self._paused = any(
+          other.status == 'waiting'
+          or (self._fail_fast and other.status == 'failed')
+          for other in self._tasks
+      )
+    self._wake.set()
 
   async def merge_result(
       self,
@@ -629,6 +703,7 @@ class ParallelTasks:
       *,
       cancelled: list[str],
       winner: str | None = None,
+      completed: list[str] | None = None,
       merged: dict[str, list[str]] | None = None,
       state_delta: dict[str, Any] | None = None,
   ) -> None:
@@ -637,6 +712,8 @@ class ParallelTasks:
     record: dict[str, Any] = {'group': self._id, 'cancelled': cancelled}
     if winner is not None:
       record['winner'] = winner
+    if completed:
+      record['completed'] = completed
     if merged is not None:
       record['merged'] = merged
     await self._ctx._invocation_context._enqueue_event(
@@ -675,14 +752,18 @@ class ParallelTasks:
               )
         active = sum(task.status == 'running' for task in self._tasks)
         for task in self._tasks:
-          if (
-              self._paused
-              or self._decision_pending
-              or (self._limit is not None and active >= self._limit)
-          ):
+          if self._limit is not None and active >= self._limit:
             break
           if task.status != 'queued':
             continue
+          if self._paused or self._decision_pending:
+            if self._winner_id is None:
+              break
+            if (
+                task.id != self._winner_id
+                and task.id not in self._completed_ids
+            ):
+              continue
           task._status = 'running'
           task._control.status = 'running'
           task._runner = asyncio.create_task(self._execute(task))
@@ -695,43 +776,61 @@ class ParallelTasks:
       self._changed.set()
 
   async def _execute(self, task: ParallelTask) -> None:
+    child: Context | None = None
+    execution_error: BaseException | None = None
     try:
-      # Legacy workers preserve their event format while inheriting any outer
-      # public task's ownership, including cancellation and transfer tracking.
-      with (
-          nullcontext()
-          if self._legacy_run_ids
-          else _bind_parallel_task(task._control)
-      ):
-        child = await self._ctx._run_node_internal(
-            task._node,
-            task._input,
-            run_id=task._run_id,
-            use_sub_branch=True,
-            return_ctx=True,
-            skip_run_id_validation=self._legacy_run_ids,
-        )
-      if task.id in self._cancelled_ids:
-        self._ctx._interrupt_ids.difference_update(child.interrupt_ids)
-        scheduler = self._ctx._workflow_scheduler
-        if scheduler is not None:
-          scheduler._state.interrupt_ids.difference_update(child.interrupt_ids)
-        task._finish('cancelled')
-        return
-      if child.error is not None:
-        raise DynamicNodeFailError(
-            message=f'Dynamic node {task.name} failed',
-            error=child.error,
-            error_node_path=child.error_node_path,
-        )
-      if child.interrupt_ids:
+      try:
+        # Legacy workers preserve their event format while inheriting any outer
+        # public task's ownership, including cancellation and transfer tracking.
+        with (
+            nullcontext()
+            if self._legacy_run_ids
+            else _bind_parallel_task(task._control)
+        ):
+          child = await self._ctx._run_node_internal(
+              task._node,
+              task._input,
+              run_id=task._run_id,
+              use_sub_branch=True,
+              return_ctx=True,
+              skip_run_id_validation=self._legacy_run_ids,
+          )
+        # Cancellation can interrupt the following lock acquisition. Expose
+        # returned HITL IDs first so deliberate drain can always remove them.
         task._interrupt_ids = set(child.interrupt_ids)
-        self._ctx._interrupt_ids.update(task._interrupt_ids)
-        raise NodeInterruptedError()
-      task._output = child.output
-      if self._first_mode:
-        self._decision_pending = True
-      task._finish('completed')
+      except asyncio.CancelledError:
+        raise
+      except BaseException as error:
+        execution_error = error
+      # Persistence yields to the Runner. Serialize terminal publication with
+      # cancellation decisions so observers and replay see the same outcome.
+      async with self._decision_lock:
+        if task.id in self._cancelled_ids:
+          if child is not None:
+            self._ctx._interrupt_ids.difference_update(child.interrupt_ids)
+            scheduler = self._ctx._workflow_scheduler
+            if scheduler is not None:
+              scheduler._state.interrupt_ids.difference_update(
+                  child.interrupt_ids
+              )
+          task._finish('cancelled')
+          return
+        if execution_error is not None:
+          raise execution_error
+        assert child is not None
+        if child.error is not None:
+          raise DynamicNodeFailError(
+              message=f'Dynamic node {task.name} failed',
+              error=child.error,
+              error_node_path=child.error_node_path,
+          )
+        if child.interrupt_ids:
+          self._ctx._interrupt_ids.update(task._interrupt_ids)
+          raise NodeInterruptedError()
+        task._output = child.output
+        if self._first_mode:
+          self._decision_pending = True
+        task._finish('completed')
     except asyncio.CancelledError:
       task._finish('cancelled')
       raise

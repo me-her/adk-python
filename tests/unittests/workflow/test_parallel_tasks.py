@@ -412,22 +412,21 @@ async def test_parent_cancellation_drains_workers_without_durable_cancel_record(
     await runner.runner.close()
 
 
-async def test_uncooperative_loser_reports_cleanup_timeout():
-  """First does not claim clean shutdown when a worker ignores cancellation."""
+async def test_first_retry_waits_for_cleanup_after_timeout():
+  """A cached winner cannot bypass incomplete cleanup or renew its deadline."""
   entered = asyncio.Event()
-  cancelled = asyncio.Event()
   release = asyncio.Event()
   closed = asyncio.Event()
-  observations = {}
+  cancellations = []
 
   async def stubborn() -> str:
     entered.set()
     try:
-      try:
-        await asyncio.Event().wait()
-      except asyncio.CancelledError:
-        cancelled.set()
-        await release.wait()
+      while not release.is_set():
+        try:
+          await release.wait()
+        except asyncio.CancelledError:
+          cancellations.append('cancelled')
       return 'late'
     finally:
       closed.set()
@@ -440,21 +439,31 @@ async def test_uncooperative_loser_reports_cleanup_timeout():
   async def coordinate(ctx: Context) -> str:
     async with ctx.parallel_tasks(cancellation_timeout=0.01) as tasks:
       loser = tasks.spawn(stubborn)
-      tasks.spawn(accepted)
+      winner = tasks.spawn(accepted)
       try:
         with pytest.raises(TimeoutError, match='did not stop within'):
           await tasks.first()
-        observations['cancelled'] = cancelled.is_set()
-        observations['closed_at_timeout'] = closed.is_set()
+        assert loser.status == 'running'
+        assert not closed.is_set()
+        deadline = loser._cancel_deadline
+        assert deadline is not None
+        with pytest.raises(TimeoutError, match='did not stop within'):
+          await tasks.first()
+        assert loser.status == 'running'
+        assert not closed.is_set()
+        assert loser._cancel_deadline == deadline
+        assert cancellations == ['cancelled']
       finally:
         release.set()
         await closed.wait()
         with pytest.raises(asyncio.CancelledError):
           await loser.result()
-      return 'timeout observed'
+      assert await tasks.first() is winner
+      assert loser.status == 'cancelled'
+      assert cancellations == ['cancelled']
+      return winner.output
 
   await _run(coordinate)
-  assert observations == {'cancelled': True, 'closed_at_timeout': False}
   assert closed.is_set()
 
 

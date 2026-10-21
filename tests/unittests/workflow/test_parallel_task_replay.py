@@ -27,17 +27,129 @@ from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
+from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._errors import NodeInterruptedError
 from google.adk.workflow.utils._replay_manager import ReplayManager
 from google.genai import types
 import pytest
 
 from . import testing_utils
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+@pytest.mark.parametrize('cancel_from_callback', [False, True])
+@pytest.mark.parametrize('final_interruption', [False, True])
+async def test_cancel_at_final_output_agrees_with_replayed_status(
+    is_resumable: bool,
+    cancel_from_callback: bool,
+    final_interruption: bool,
+):
+  """A cancellation racing final output has one live and replay disposition.
+
+  Setup: Hold the worker's final event until cancellation can be requested.
+  Act: Cancel from the progress callback or await group cancellation, then
+    pause for human input and resume.
+  Assert: Both outcomes agree with the durable decision; the worker runs once.
+  """
+  observations = {'calls': [], 'results': [], 'statuses': [], 'requests': []}
+  final_output_seen = asyncio.Event()
+  release_final_output = asyncio.Event()
+
+  class CancelAtOutput(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      at_boundary = event.output == 'done' or 'unused_approval' in (
+          event.long_running_tool_ids or set()
+      )
+      if at_boundary and 'parallel_task' in (event.custom_metadata or {}):
+        if cancel_from_callback:
+          observations['requests'].append(observations['task'].cancel())
+        else:
+          final_output_seen.set()
+          await release_final_output.wait()
+      return None
+
+  @node(rerun_on_resume=True)
+  async def worker() -> AsyncGenerator[Event, None]:
+    observations['calls'].append('worker')
+    if final_interruption:
+      yield RequestInput(interrupt_id='unused_approval', message='Not needed')
+      return
+    yield Event(output='done')
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> AsyncGenerator[Event, None]:
+    async with ctx.parallel_tasks() as group:
+      task = group.spawn(worker)
+      observations['task'] = task
+      if not cancel_from_callback and 'approval' not in ctx.resume_inputs:
+        await final_output_seen.wait()
+        release_final_output.set()
+        await group.cancel(task)
+      try:
+        outcome = await task.result()
+      except asyncio.CancelledError:
+        outcome = 'cancelled'
+      observations['results'].append(outcome)
+      observations['statuses'].append(task.status)
+    assert not ctx.interrupt_ids
+    if 'approval' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approval', message='Continue?')
+      return
+    yield Event(output=outcome)
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='cancellation_race',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          plugins=[CancelAtOutput(name='cancel_at_output')],
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+  try:
+    events = await asyncio.wait_for(runner.run_async('start'), 3)
+    assert observations['requests'] == ([True] if cancel_from_callback else [])
+    cancelled = any(
+        observations['task'].id
+        in (event.custom_metadata or {})
+        .get('__adk_internal_parallel_tasks', {})
+        .get('cancelled', [])
+        for event in runner.session.events
+    )
+    expected_result = 'cancelled' if cancelled else 'done'
+    expected_status = 'cancelled' if cancelled else 'completed'
+    if final_interruption:
+      assert cancelled
+    assert observations['results'] == [expected_result]
+    assert observations['statuses'] == [expected_status]
+    response = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id='approval',
+                    name='adk_request_input',
+                    response={'result': 'yes'},
+                )
+            )
+        ],
+    )
+    resumed = await asyncio.wait_for(
+        runner.run_async(response, invocation_id=events[0].invocation_id), 3
+    )
+    assert any(event.output == expected_result for event in resumed)
+  finally:
+    await runner.runner.close()
+
+  assert observations['calls'] == ['worker']
+  assert observations['results'] == [expected_result, expected_result]
+  assert observations['statuses'] == [expected_status, expected_status]
 
 
 @pytest.mark.parametrize('explicit_group', [False, True])
@@ -95,6 +207,355 @@ async def test_legacy_worker_preserves_event_metadata_and_outer_ownership(
       assert event.custom_metadata == expected
   finally:
     await runner.runner.close()
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+@pytest.mark.parametrize('other_fails', [False, True])
+@pytest.mark.parametrize('observe_after_first', [False, True])
+async def test_first_preserves_previously_observed_nonwinner_on_resume(
+    is_resumable: bool,
+    other_fails: bool,
+    observe_after_first: bool,
+):
+  """Selection preserves observed terminal results and failures across replay.
+
+  Setup: Inspect a terminal candidate before or after selecting another winner.
+  Act: Select, pause for human input, and resume the same coordinator.
+  Assert: Terminal status stays consistent; completed work is reused and
+    failed work retains the native scheduler's retry behavior.
+  """
+  calls = []
+  observed = []
+
+  async def worker(node_input: str) -> str:
+    calls.append(node_input)
+    if other_fails and node_input == 'other':
+      raise ValueError('Rejected candidate')
+    return node_input
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> AsyncGenerator[Event, None]:
+    async with ctx.parallel_tasks(max_parallel_workers=1) as group:
+      group.spawn(worker, 'winner')
+      other = group.spawn(worker, 'other')
+      await group.wait(mode='all')
+      if observe_after_first:
+        winner = await group.first(lambda output: output == 'winner')
+      try:
+        result = await other.result()
+      except DynamicNodeFailError:
+        result = 'failed'
+      observed.append((result, other.status))
+      if not observe_after_first:
+        winner = await group.first(lambda output: output == 'winner')
+      assert other.status == ('failed' if other_fails else 'completed')
+    if 'approval' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approval', message='Continue?')
+      return
+    yield Event(output=winner.output)
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='completed_candidate',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+  expected = ('failed', 'failed') if other_fails else ('other', 'completed')
+  try:
+    events = await asyncio.wait_for(runner.run_async('start'), 3)
+    assert observed == [expected]
+    response = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id='approval',
+                    name='adk_request_input',
+                    response={'result': 'yes'},
+                )
+            )
+        ],
+    )
+    resumed = await asyncio.wait_for(
+        runner.run_async(response, invocation_id=events[0].invocation_id), 3
+    )
+    assert any(event.output == 'winner' for event in resumed)
+  finally:
+    await runner.runner.close()
+
+  # Native replay retries failed nodes; completed nodes reuse their output.
+  assert calls == ['winner', 'other'] + (['other'] if other_fails else [])
+  assert observed == [expected, expected]
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+@pytest.mark.parametrize('retry_before_winner', [False, True])
+async def test_restored_winner_drains_a_failed_siblings_unfinished_retry(
+    is_resumable: bool,
+    retry_before_winner: bool,
+):
+  """Restoring a winner cancels an unfinished retry before returning it."""
+  calls = []
+  retry_started = asyncio.Event()
+  retry_closed = asyncio.Event()
+
+  async def worker(node_input: str) -> str:
+    calls.append(node_input)
+    if node_input == 'other':
+      if calls.count('other') == 1:
+        raise ValueError('Candidate failed on its first attempt')
+      retry_started.set()
+      try:
+        await asyncio.Event().wait()
+      finally:
+        retry_closed.set()
+    return node_input
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> AsyncGenerator[Event, None]:
+    async with ctx.parallel_tasks(
+        max_parallel_workers=1 if retry_before_winner else 2
+    ) as group:
+      if retry_before_winner:
+        other = group.spawn(worker, 'other')
+        group.spawn(worker, 'winner')
+      else:
+        group.spawn(worker, 'winner')
+        other = group.spawn(worker, 'other')
+      if 'approval' in ctx.resume_inputs:
+        await retry_started.wait()
+      else:
+        await group.wait(mode='all')
+        assert other.status == 'failed'
+      winner = await group.first(lambda output: output == 'winner')
+      if 'approval' in ctx.resume_inputs:
+        assert retry_closed.is_set()
+        assert other.status == 'cancelled'
+    if 'approval' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approval', message='Continue?')
+      return
+    yield Event(output=winner.output)
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='retried_candidate',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+  try:
+    events = await asyncio.wait_for(runner.run_async('start'), 3)
+    response = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id='approval',
+                    name='adk_request_input',
+                    response={'result': 'yes'},
+                )
+            )
+        ],
+    )
+    resumed = await asyncio.wait_for(
+        runner.run_async(response, invocation_id=events[0].invocation_id), 3
+    )
+    assert any(event.output == 'winner' for event in resumed)
+  finally:
+    await runner.runner.close()
+
+  assert calls == (
+      ['other', 'winner', 'other']
+      if retry_before_winner
+      else ['winner', 'other', 'other']
+  )
+  assert retry_closed.is_set()
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+@pytest.mark.parametrize('workflow_sibling', [False, True])
+async def test_restored_winner_retains_completed_sibling_with_bounded_admission(
+    is_resumable: bool,
+    workflow_sibling: bool,
+):
+  """A retained sibling queued behind the restored winner hydrates normally."""
+  calls = []
+  observed = []
+
+  async def worker(node_input: str) -> str:
+    calls.append(node_input)
+    return node_input
+
+  other_node = (
+      Workflow(name='other_workflow', edges=[(START, worker)])
+      if workflow_sibling
+      else worker
+  )
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> AsyncGenerator[Event, None]:
+    async with ctx.parallel_tasks(max_parallel_workers=1) as group:
+      group.spawn(worker, 'winner')
+      other = group.spawn(other_node, 'other')
+      if 'approval' not in ctx.resume_inputs:
+        await group.wait(mode='all')
+      winner = await group.first(lambda output: output == 'winner')
+      # Resume enters first() before the second handle can hydrate. Selection
+      # must preserve this known completed sibling and admit it through the cap.
+      assert other.status == 'completed'
+      observed.append(await other.result())
+    if 'approval' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approval', message='Continue?')
+      return
+    yield Event(output=winner.output)
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='retained_candidate',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+  try:
+    events = await asyncio.wait_for(runner.run_async('start'), 3)
+    response = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id='approval',
+                    name='adk_request_input',
+                    response={'result': 'yes'},
+                )
+            )
+        ],
+    )
+    resumed = await asyncio.wait_for(
+        runner.run_async(response, invocation_id=events[0].invocation_id), 3
+    )
+    assert any(event.output == 'winner' for event in resumed)
+  finally:
+    await runner.runner.close()
+
+  assert calls == ['winner', 'other']
+  assert observed == ['other', 'other']
+
+
+async def test_selection_timeout_preserves_retained_workflow_until_retry():
+  """Timing out a losing retry must not cancel retained native hydration."""
+  calls = []
+  resuming = asyncio.Event()
+  retry_started = asyncio.Event()
+  retry_closed = asyncio.Event()
+  release_retry = asyncio.Event()
+  hydration_started = asyncio.Event()
+  hydration_cancelled = asyncio.Event()
+  release_hydration = asyncio.Event()
+
+  async def worker(node_input: str) -> str:
+    calls.append(node_input)
+    if node_input == 'failed':
+      if calls.count('failed') == 1:
+        raise ValueError('Candidate failed on its first attempt')
+      retry_started.set()
+      try:
+        while not release_retry.is_set():
+          try:
+            await release_retry.wait()
+          except asyncio.CancelledError:
+            pass
+      finally:
+        retry_closed.set()
+    return node_input
+
+  class GatedWorkflow(Workflow):
+
+    async def _run_impl(self, *, ctx, node_input):
+      if resuming.is_set():
+        hydration_started.set()
+        try:
+          await release_hydration.wait()
+        except asyncio.CancelledError:
+          hydration_cancelled.set()
+          raise
+      async for event in super()._run_impl(ctx=ctx, node_input=node_input):
+        yield event
+
+  retained_node = GatedWorkflow(name='retained', edges=[(START, worker)])
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context) -> AsyncGenerator[Event, None]:
+    async with ctx.parallel_tasks(cancellation_timeout=0.01) as group:
+      group.spawn(worker, 'winner')
+      failed = group.spawn(worker, 'failed')
+      retained = group.spawn(retained_node, 'retained')
+      if not resuming.is_set():
+        await group.wait(mode='all')
+        winner = await group.first(lambda output: output == 'winner')
+      else:
+        selection = None
+        try:
+          await retry_started.wait()
+          await hydration_started.wait()
+          with pytest.raises(TimeoutError, match='did not stop within'):
+            await group.first()
+          assert retained.status == 'running'
+          assert not hydration_cancelled.is_set()
+          release_retry.set()
+          await retry_closed.wait()
+          with pytest.raises(asyncio.CancelledError):
+            await failed.result()
+          selection = asyncio.create_task(group.first())
+          await asyncio.sleep(0)
+          assert not selection.done()
+          release_hydration.set()
+          winner = await selection
+          assert await retained.result() == 'retained'
+          assert retained.status == 'completed'
+          assert not hydration_cancelled.is_set()
+        finally:
+          release_retry.set()
+          release_hydration.set()
+          if selection is not None:
+            await asyncio.gather(selection, return_exceptions=True)
+    if 'approval' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approval', message='Continue?')
+      return
+    yield Event(output=winner.output)
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='retry_retained',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+  try:
+    events = await asyncio.wait_for(runner.run_async('start'), 3)
+    resuming.set()
+    response = types.Content(
+        role='user',
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id='approval',
+                    name='adk_request_input',
+                    response={'result': 'yes'},
+                )
+            )
+        ],
+    )
+    resumed = await asyncio.wait_for(
+        runner.run_async(response, invocation_id=events[0].invocation_id), 3
+    )
+    assert any(event.output == 'winner' for event in resumed)
+  finally:
+    release_retry.set()
+    release_hydration.set()
+    await runner.runner.close()
+
+  assert calls == ['winner', 'failed', 'retained', 'failed']
 
 
 @pytest.mark.parametrize('is_resumable', [False, True])

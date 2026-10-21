@@ -91,6 +91,10 @@ No new queued worker is admitted while a completed candidate is being checked.
 The winning decision is recorded before siblings are cancelled. Results observed
 in the same completion batch are checked in spawn order.
 
+Cancellation applies to unfinished siblings. Completed results stay available,
+including after resume. Failed nodes keep ADK's native retry behavior; a retry
+that is still running when a saved winner is restored is cancelled and drained.
+
 If all successful results are rejected, `first` raises `ValueError`; if no answer
 is accepted and a worker failed, it propagates a worker failure. Human input
 propagates when no remaining active worker can provide an accepted answer.
@@ -175,6 +179,8 @@ undo tool effects. Keep speculative work free of irreversible side effects.
   request. Completed or in-flight requests can still be billed.
 - If an explicit cancellation or winner selection cannot drain a worker before
   the timeout, it raises `TimeoutError` instead of reporting successful cleanup.
+  Retrying `first` keeps the selected winner and still requires cleanup to finish;
+  it does not reset the cancellation deadline.
   While unwinding another error or parent cancellation, it logs the timeout and
   preserves that original error. A worker that suppresses cancellation may
   still be running. Scope exit seals its mailbox and marks remaining messages
