@@ -12,6 +12,12 @@ A node with a list to work through, whether that is documents to analyze, querie
 
 There is no `ParallelWorker` class to import. You turn the mode on with the `parallel_worker=True` flag on `@node(...)`, on `Node(...)`, or on an `Agent(...)` being used as a node, and the node then runs once per element of its input list rather than once on the list as a whole.
 
+For a coordinator that needs individual task handles, messages, selective
+cancellation, or the first acceptable answer, use
+[parallel tasks](../parallel_tasks/index.md). Both forms use the same owned task
+group and native node scheduler; parallel worker mode retains its ordered list
+results and bounded active work.
+
 ## Get started
 
 The one thing to get right is the parameter name. Each list element is handed to the worker as `node_input`, so the function's parameter **must** be called `node_input`. Any other name is looked up in `ctx.state` instead, is not found there, and every run fails with `ValueError: Missing value for parameter "<name>"` before the function body executes.
