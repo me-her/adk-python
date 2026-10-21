@@ -22,6 +22,7 @@ import logging
 import pathlib
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Union
 import zipfile
@@ -167,7 +168,9 @@ def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   if not isinstance(parsed, dict):
     raise ValueError("SKILL.md frontmatter must be a YAML mapping")
 
-  return parsed, body
+  # YAML permits non-string mapping keys, and those have always been passed
+  # through to the caller.
+  return cast("dict[str, Any]", parsed), body
 
 
 def _parse_skill_md(
@@ -639,7 +642,7 @@ def _list_skills_in_gcs_dir(
     pass
   logging.info("Found %s skills in GCS.", iterator.prefixes)
 
-  skills = {}
+  skills: dict[str, models.Frontmatter] = {}
   for skill_prefix in sorted(iterator.prefixes):
     manifest_blob = bucket.blob(f"{skill_prefix}SKILL.md")
 
@@ -724,10 +727,10 @@ def _load_skill_from_gcs_dir(
         f" name '{skill_name_expected}'."
     )
 
-  def _load_files_in_dir(subdir: str) -> Dict[str, Union[str, bytes]]:
+  def _load_files_in_dir(subdir: str) -> dict[str, Union[str, bytes]]:
     prefix = f"{skill_dir_prefix}{subdir}/"
     blobs = bucket.list_blobs(prefix=prefix)
-    result = {}
+    result: dict[str, str | bytes] = {}
 
     for blob in blobs:
       if blob.name.endswith("/"):

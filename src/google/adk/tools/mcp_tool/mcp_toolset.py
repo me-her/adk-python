@@ -24,7 +24,6 @@ import time
 from typing import Any
 from typing import Awaitable
 from typing import Callable
-from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -41,6 +40,7 @@ from ...auth._auth_headers import build_auth_headers
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ClientSession as _ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
@@ -177,7 +177,7 @@ class McpToolset(BaseToolset):
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
       propagate_grounding_metadata: bool = False,
-  ):
+  ) -> None:
     """Initializes the McpToolset.
 
     Args:
@@ -360,19 +360,22 @@ class McpToolset(BaseToolset):
     """
     provider_headers = None
     if self._header_provider and readonly_context:
-      provider_headers = self._header_provider(readonly_context)
-      if inspect.isawaitable(provider_headers):
-        provider_headers = await provider_headers
+      provided_headers = self._header_provider(readonly_context)
+      provider_headers = (
+          await provided_headers
+          if inspect.isawaitable(provided_headers)
+          else provided_headers
+      )
 
     auth_headers = self._get_auth_headers(readonly_context)
     return _merge_auth_and_provider_headers(
         auth_headers=auth_headers,
-        provider_headers=cast(Dict[str, str] | None, provider_headers),
+        provider_headers=provider_headers,
     )
 
   async def _execute_with_session(
       self,
-      coroutine_func: Callable[[Any], Awaitable[T]],
+      coroutine_func: Callable[[_ClientSession], Awaitable[T]],
       error_message: str,
       readonly_context: Optional[ReadonlyContext] = None,
       headers: Optional[Dict[str, str]] = None,

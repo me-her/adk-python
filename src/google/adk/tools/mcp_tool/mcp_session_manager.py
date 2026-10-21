@@ -33,6 +33,7 @@ from types import TracebackType
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import Protocol
@@ -201,7 +202,7 @@ class _StreamableHttpClientWrapper:
       url: str,
       http_client: httpx.AsyncClient,
       terminate_on_close: bool = True,
-  ):
+  ) -> None:
     self.url = url
     self.http_client = http_client
     self.terminate_on_close = terminate_on_close
@@ -391,7 +392,7 @@ class _DebugHttpxClientFactory:
       self,
       base_factory: CheckableMcpHttpClientFactory,
       session_manager: MCPSessionManager | None = None,
-  ):
+  ) -> None:
     self._base_factory = base_factory
     self._session_manager = session_manager
 
@@ -598,7 +599,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
       self,
       creds: google.auth.credentials.Credentials,
       target_host: str | None = None,
-  ):
+  ) -> None:
     super().__init__()
     self._creds = creds
     self._target_host = target_host
@@ -652,7 +653,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
 class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
   """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
 
-  def __init__(self, auth_response: Any):
+  def __init__(self, auth_response: Any) -> None:
     self._auth_response = auth_response
 
   async def __aiter__(self) -> AsyncIterator[bytes]:
@@ -666,7 +667,7 @@ class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
 class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
   """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
 
-  def __init__(self, auth_session: Any):
+  def __init__(self, auth_session: AsyncAuthorizedSession) -> None:
     self._auth_session = auth_session
 
   async def handle_async_request(
@@ -694,7 +695,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
             aiohttp.helpers.get_env_proxy_for_url,
             yarl.URL(str(request.url)),
         )
-    auth_response: Any = await self._auth_session.request(
+    auth_response = await self._auth_session.request(
         method=request.method,
         url=str(request.url),
         data=content if content else None,
@@ -728,7 +729,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
 class _SharedAsyncTransport(httpx.AsyncBaseTransport):
   """Wrapper transport that prevents the wrapped transport from being closed."""
 
-  def __init__(self, transport: httpx.AsyncBaseTransport):
+  def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
     self._transport = transport
 
   async def handle_async_request(
@@ -746,7 +747,7 @@ def _create_mtls_client_factory(
   """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
 
   def factory(
-      headers: dict[str, Any] | None = None,
+      headers: dict[str, str] | None = None,
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
@@ -782,7 +783,7 @@ class MCPSessionManager:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
-  ):
+  ) -> None:
     """Initializes the MCP session manager.
 
     Args:
@@ -1019,20 +1020,20 @@ class MCPSessionManager:
         Merged headers dictionary, or None for stdio connections, which do not
         support headers.
     """
-    if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
-        self._connection_params, StdioServerParameters
-    ):
+    if isinstance(self._connection_params, StdioConnectionParams):
       # Stdio connections don't support headers
       return None
 
-    base_headers = {}
+    base_headers: Dict[str, str] = {}
     if (
         hasattr(self._connection_params, 'headers')
         and self._connection_params.headers
     ):
       base_headers = {
           key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
-          for key, value in self._connection_params.headers.items()
+          for key, value in cast(
+              'Dict[str, str]', self._connection_params.headers
+          ).items()
       }
 
     if additional_headers:
@@ -1486,15 +1487,10 @@ class MCPSessionManager:
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
-      timeout_in_seconds = (
-          self._connection_params.timeout
-          if hasattr(self._connection_params, 'timeout')
-          else None
-      )
-      sse_read_timeout_in_seconds = (
-          self._connection_params.sse_read_timeout
-          if hasattr(self._connection_params, 'sse_read_timeout')
-          else None
+      # Connection params are extensible, so neither timeout is guaranteed.
+      timeout_in_seconds = getattr(self._connection_params, 'timeout', None)
+      sse_read_timeout_in_seconds = getattr(
+          self._connection_params, 'sse_read_timeout', None
       )
 
       try:

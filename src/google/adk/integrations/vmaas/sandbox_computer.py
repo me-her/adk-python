@@ -251,7 +251,7 @@ class AgentEngineSandboxComputer(BaseComputer):
 
     return agent_engine_name
 
-  async def _get_sandbox(self) -> tuple[str, Any]:
+  async def _get_sandbox(self) -> tuple[str, object]:
     """Get the sandbox, creating one if needed.
 
     Returns:
@@ -262,7 +262,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Check if provided in constructor (BYOS mode)
     if self._sandbox_name:
       # Get sandbox object from name
-      sandbox = await asyncio.to_thread(
+      sandbox: object = await asyncio.to_thread(
           client.sandboxes.get, name=self._sandbox_name
       )
       return self._sandbox_name, sandbox

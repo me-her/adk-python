@@ -223,7 +223,7 @@ class SandboxClient:
         logger.warning("Batch CDP failed: %s, falling back to sequential", e)
 
     # Sequential fallback
-    results = []
+    results: list[dict[str, Any]] = []
     for cmd in commands:
       try:
         result = await self.make_cdp_request(

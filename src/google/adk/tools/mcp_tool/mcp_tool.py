@@ -223,6 +223,9 @@ class ProgressFnT(Protocol):
     ...
 
 
+_ConfirmationPredicate = Callable[..., bool | Awaitable[bool]]
+
+
 @runtime_checkable
 class ProgressCallbackFactory(Protocol):
   """Factory protocol for creating per-tool progress callbacks.
@@ -312,7 +315,7 @@ class McpTool(BaseAuthenticatedTool):
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
       propagate_grounding_metadata: bool = False,
-  ):
+  ) -> None:
     """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
@@ -516,11 +519,16 @@ class McpTool(BaseAuthenticatedTool):
     return None
 
   async def _invoke_callable(
-      self, target: Callable[..., Any], args_to_call: dict[str, Any]
-  ) -> Any:
+      self,
+      target: _ConfirmationPredicate,
+      args_to_call: dict[str, Any],
+  ) -> bool:
     """Invokes a callable, handling both sync and async cases."""
-    return await _invoke_callable(
-        target, args_to_call, unwrapped=unwrap_callable(target)
+    return cast(
+        bool,
+        await _invoke_callable(
+            target, args_to_call, unwrapped=unwrap_callable(target)
+        ),
     )
 
   def _prepare_callable_args(
@@ -565,9 +573,8 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      return await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
     return bool(self._require_confirmation)
 
@@ -849,7 +856,7 @@ class McpTool(BaseAuthenticatedTool):
     return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
-      self, tool_context: ToolContext, credential: AuthCredential
+      self, tool_context: ToolContext, credential: AuthCredential | None
   ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
@@ -901,10 +908,11 @@ class McpTool(BaseAuthenticatedTool):
           headers = headers or {}
           headers.update(credential.http.additional_headers)
       elif credential.api_key:
-        if (
-            not self._credentials_manager
-            or not self._credentials_manager._auth_config
-        ):
+        credentials_manager = self._credentials_manager
+        auth_config = (
+            credentials_manager._auth_config if credentials_manager else None
+        )
+        if auth_config is None:
           error_msg = (
               "Cannot find corresponding auth scheme for API key credential."
           )
@@ -915,7 +923,7 @@ class McpTool(BaseAuthenticatedTool):
           # carry them too, so read them off the scheme rather than requiring
           # an APIKey instance. A scheme with neither used to raise
           # AttributeError here.
-          scheme = self._credentials_manager._auth_config.auth_scheme
+          scheme = auth_config.auth_scheme
           key_location = getattr(scheme, "in_", None)
           key_name = getattr(scheme, "name", None)
           if key_location != APIKeyIn.header:

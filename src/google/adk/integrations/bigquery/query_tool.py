@@ -31,6 +31,7 @@ from google.cloud import bigquery
 
 from . import client
 from ...tools.tool_context import ToolContext
+from .._google_sdk import read_api_repr as _read_api_repr
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
@@ -305,7 +306,8 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+      dry_run_info = _read_api_repr(dry_run_job)
+      return {"status": "SUCCESS", "dry_run_info": dry_run_info}
 
     # Finally execute the query, fetch the result, and return it
     job_config = bigquery.QueryJobConfig(
@@ -959,7 +961,7 @@ def forecast(
     timestamp_col: str,
     data_col: str,
     horizon: int = 10,
-    id_cols: Optional[list[str]] = None,
+    id_cols: list[str] | None = None,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1399,10 +1401,10 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 1000,
-    target_data: Optional[str] = None,
-    times_series_id_cols: Optional[list[str]] = None,
-    anomaly_prob_threshold: Optional[float] = 0.95,
+    horizon: int | None = 1000,
+    target_data: str | None = None,
+    times_series_id_cols: list[str] | None = None,
+    anomaly_prob_threshold: float | None = 0.95,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
