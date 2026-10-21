@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import copy
 import json
 from pathlib import Path
+import ssl
 import tempfile
 import threading
 from typing import Literal
@@ -75,6 +77,7 @@ from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.sessions.session import Session
+from google.adk.utils import _mtls_utils
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel
@@ -438,6 +441,113 @@ class TestRemoteA2aAgentResolution:
           _compat.TransportProtocol.http_json,
       ]
     # 1.x uses supported_protocol_bindings instead.
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://us-aiplatform.googleapis.com/v1/agent.json",
+          create_test_agent_card(
+              url="https://us-aiplatform.googleapis.com/v1/rpc"
+          ),
+      ],
+      ids=["url_source", "card"],
+  )
+  async def test_ensure_httpx_client_presents_client_cert(self, agent_card):
+    """For a Google API agent the default client presents the client cert."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+    client_cert_ctx = ssl.create_default_context()
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=client_cert_ctx,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == [
+          _mtls_utils._route_googleapis_request_to_mtls
+      ]
+      assert client._transport._pool._ssl_context is client_cert_ctx
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://example.com/agent.json",
+          create_test_agent_card(url="https://example.com/rpc"),
+          _make_multi_interface_card([
+              ("https://us-aiplatform.googleapis.com/v1/rpc", "JSONRPC"),
+              ("https://example.com/rpc", "JSONRPC"),
+          ]),
+      ],
+      ids=["url_source", "card", "card_with_off_google_interface"],
+  )
+  async def test_ensure_httpx_client_skips_client_cert_for_other_hosts(
+      self, agent_card
+  ):
+    """The client cert is never loaded for an agent off *.googleapis.com."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+
+    with patch.object(
+        _mtls_utils, "_client_cert_ssl_context", autospec=True
+    ) as mock_ssl_context:
+      client = await agent._ensure_httpx_client()
+
+    try:
+      mock_ssl_context.assert_not_called()
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_without_client_cert(self):
+    """Without a client cert the default client keeps httpx defaults."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(
+            url="https://us-aiplatform.googleapis.com/v1/rpc"
+        ),
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_concurrent_callers_share_one_client(self):
+    """Callers racing to create the default client all get the same one."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card=create_test_agent_card()
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      clients = await asyncio.gather(
+          *(agent._ensure_httpx_client() for _ in range(5))
+      )
+
+    try:
+      assert all(client is clients[0] for client in clients)
+    finally:
+      await agent.cleanup()
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):
@@ -1161,6 +1271,41 @@ class TestRemoteA2aAgentResolution:
     await agent._validate_agent_card(
         create_test_agent_card(url="https://example.com/rpc")
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "source, rpc_url",
+      [
+          (
+              "https://us-aiplatform.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.mtls.googleapis.com/v1/rpc",
+          ),
+          (
+              "https://us-aiplatform.mtls.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.googleapis.com/v1/rpc",
+          ),
+      ],
+  )
+  async def test_validate_agent_card_treats_mtls_googleapis_host_as_same_origin(
+      self, source, rpc_url
+  ):
+    """A Google API card may name the mTLS or plain host of its source."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=source)
+
+    await agent._validate_agent_card(create_test_agent_card(url=rpc_url))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_other_mtls_googleapis_host(self):
+    """The mTLS carve-out does not admit a different Google API host."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://us-aiplatform.googleapis.com/v1/agent.json",
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="same origin"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="https://other.mtls.googleapis.com/rpc")
+      )
 
   @pytest.mark.asyncio
   async def test_validate_agent_card_rejects_cross_origin_rpc_url(self):
