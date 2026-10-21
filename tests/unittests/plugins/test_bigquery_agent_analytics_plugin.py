@@ -13307,6 +13307,8 @@ class _EvalViewSqlEvaluator:
       return None if args[0] == args[1] else args[0]
     if name == "ARRAY_LENGTH":
       return None if args[0] is None else len(args[0])
+    if name == "TRIM":
+      return None if args[0] is None else args[0].strip()
     if name == "CHR":
       return chr(args[0])
     if name in ("REGEXP_CONTAINS", "REGEXP_REPLACE"):
@@ -14885,6 +14887,447 @@ class TestEvalViews:
           **first_turn_events[0],
           "event_timestamp": "2026-04-19T12:00:00Z",
       })
+
+  @pytest.mark.asyncio
+  async def test_eval_views_conversation_only_mode(self):
+    """eval_view_mode='conversation_only' requires only the 3 core events."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.eval_view_mode == "full"
+
+    core_events = {
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+    }
+    assert bigquery_agent_analytics_plugin._EVAL_VIEW_CORE_EVENTS == core_events
+    redacted_allowlist = [
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_STARTING",
+        "INVOCATION_COMPLETED",
+        "LLM_REQUEST",
+        "LLM_RESPONSE",
+        "LLM_ERROR",
+        "TOOL_ERROR",
+        "AGENT_ERROR",
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Set eval_view_mode='conversation_only'",
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True,
+              event_allowlist=redacted_allowlist,
+          ),
+      )
+
+    plugin_redacted = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=redacted_allowlist,
+                event_denylist=["TOOL_STARTING", "AGENT_STARTING"],
+            ),
+        )
+    )
+    assert plugin_redacted.config.eval_view_mode == "conversation_only"
+
+    for core_event in sorted(core_events):
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_denylist=[core_event],
+            ),
+        )
+      with pytest.raises(
+          ValueError, match=re.escape(f"missing: ['{core_event}'].")
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=sorted(core_events - {core_event}),
+            ),
+        )
+
+    plugin_unknown_mode = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+        )
+    )
+    for bad_mode in ("invalid_mode", []):
+      plugin_unknown_mode.config.eval_view_mode = (
+          bad_mode  # type: ignore[assignment]
+      )
+      with pytest.raises(
+          ValueError,
+          match=re.escape(f"unknown eval_view_mode={bad_mode!r}"),
+      ):
+        await plugin_unknown_mode.create_eval_views()
+
+  def test_eval_formatted_response_prefers_text_summary_before_response(self):
+    """formatted_response prefers non-blank string $.text_summary.
+
+    When $.text_summary is missing, blank, or not a JSON string, it falls back
+    to $.response.
+    """
+    _, turn_view = self._eval_views()
+
+    def evaluate_response(content):
+      formatted = turn_view.evaluate(
+          "formatted_response",
+          {"event_type": "AGENT_RESPONSE", "content": content},
+      )
+      response_text = turn_view.evaluate(
+          "response_text",
+          {"event_type": "AGENT_RESPONSE", "formatted_response": formatted},
+      )
+      return formatted, response_text
+
+    # 1. A non-blank string $.text_summary (e.g. from a custom
+    # content_formatter) takes precedence over $.response.
+    assert evaluate_response({
+        "text_summary": "Summary wins.",
+        "response": {"parts": [{"markdown": "Ignored part."}]},
+    }) == ("Summary wins.", "Summary wins.")
+    assert evaluate_response({
+        "text_summary": "  Padded summary.  ",
+        "response": "text: 'Ignored'",
+    }) == ("  Padded summary.  ", "  Padded summary.  ")
+    assert evaluate_response({
+        "text_summary": "text: 'Wrapped summary'",
+        "response": "text: 'Ignored'",
+    }) == ("text: 'Wrapped summary'", "Wrapped summary")
+
+    # 2. Missing, empty, whitespace-only, or non-string $.text_summary falls
+    # through to $.response.
+    assert evaluate_response({
+        "text_summary": "   \n\t ",
+        "response": "text: 'Hi'",
+    }) == ("text: 'Hi'", "Hi")
+    assert evaluate_response({
+        "text_summary": "",
+        "response": "Plain string response.",
+    }) == ("Plain string response.", "Plain string response.")
+    assert evaluate_response({
+        "text_summary": {"nested": "not a string scalar"},
+        "response": "text: 'Fallback to response'",
+    }) == ("text: 'Fallback to response'", "Fallback to response")
+    assert evaluate_response({
+        "text_summary": False,
+        "response": "text: 'Fallback from bool'",
+    }) == ("text: 'Fallback from bool'", "Fallback from bool")
+    assert evaluate_response({
+        "text_summary": 123,
+        "response": "text: 'Fallback from int'",
+    }) == ("text: 'Fallback from int'", "Fallback from int")
+
+    # 3. Object or array $.response is serialized with TO_JSON_STRING when no
+    # non-blank string $.text_summary is present.
+    multi_answer = {
+        "answer": "Paris",
+        "sources": ["wiki/Paris"],
+        "confidence": 0.9,
+    }
+    formatted_multi, text_multi = evaluate_response({"response": multi_answer})
+    assert formatted_multi == text_multi
+    assert json.loads(text_multi) == multi_answer
+    array_response = [{"step": 1}, {"step": 2}]
+    formatted_arr, text_arr = evaluate_response({"response": array_response})
+    assert formatted_arr == text_arr
+    assert json.loads(text_arr) == array_response
+    wrapped_output_schema = (
+        'text: \'{"summary": "Met with team", "action_items": ["ship'
+        ' CL", "write doc"]}\''
+    )
+    assert evaluate_response({"response": wrapped_output_schema}) == (
+        wrapped_output_schema,
+        (
+            '{"summary": "Met with team", "action_items": ["ship CL", "write'
+            ' doc"]}'
+        ),
+    )
+    assert evaluate_response({"text_summary": "  ", "response": ""}) == (
+        None,
+        None,
+    )
+
+  def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
+    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+
+    Covers legacy callable reprs, empty text_summary, and current
+    before_agent_callback rows with content=None and
+    instruction_source='provider'.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    rows = [
+        # Session 1, Turn 1: AGENT_STARTING instruction takes precedence over
+        # LLM_REQUEST.system_prompt.
+        event(
+            "inv-static",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Run query."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            1,
+            "AGENT_STARTING",
+            {"text_summary": "Static agent instruction."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            2,
+            "LLM_REQUEST",
+            {"system_prompt": "Dynamic system prompt v1."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            3,
+            "TOOL_STARTING",
+            {"tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            4,
+            "TOOL_COMPLETED",
+            {"tool": "execute_sql", "result": {"rows": 1}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            5,
+            "AGENT_RESPONSE",
+            {"text_summary": "1 row returned."},
+            session_id="s-static",
+        ),
+        event("inv-static", 6, "INVOCATION_COMPLETED", session_id="s-static"),
+        # Session 2, Turn 1: callable InstructionProvider on AGENT_STARTING
+        # (both current content=None with instruction_source='provider' and
+        # legacy function repr); earliest non-blank LLM_REQUEST.system_prompt
+        # in the session wins.
+        event(
+            "inv-callable-1",
+            10,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Clarify metric."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            11,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            12,
+            "LLM_REQUEST",
+            {"system_prompt": "   "},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            13,
+            "LLM_REQUEST",
+            {"system_prompt": "Earliest session system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            14,
+            "LLM_REQUEST",
+            {"system_prompt": "Turn 1 retry system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            15,
+            "AGENT_STARTING",
+            "<function sub_instruction at 0x7f0001>",
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            16,
+            "LLM_REQUEST",
+            {"system_prompt": "Sub-agent session prompt."},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            17,
+            "AGENT_RESPONSE",
+            {"text_summary": "Do you mean gross or net revenue?"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            18,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
+        # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
+        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # LLM_REQUEST; both still resolve to their earliest session
+        # system_prompt in turn_view and session_view.
+        event(
+            "inv-callable-2",
+            20,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Net revenue."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            21,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            22,
+            "LLM_REQUEST",
+            {"system_prompt": "Later turn 2 system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            23,
+            "AGENT_STARTING",
+            {"text_summary": ""},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            24,
+            "AGENT_RESPONSE",
+            {"text_summary": "Net revenue is $10M."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            25,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 3, Turn 1: conversation-only turn (only USER_MESSAGE_RECEIVED,
+        # AGENT_RESPONSE, INVOCATION_COMPLETED).
+        event(
+            "inv-conv-only",
+            30,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Pinned query."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            31,
+            "AGENT_RESPONSE",
+            {"text_summary": "Fast-path answer."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            32,
+            "INVOCATION_COMPLETED",
+            session_id="s-conv-only",
+        ),
+    ]
+
+    session_rows = {row["session_id"]: row for row in session_view.run(rows)}
+    turn_rows = {row["invocation_id"]: row for row in turn_view.run(rows)}
+
+    assert (
+        session_rows["s-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+    assert (
+        turn_rows["inv-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+
+    assert (
+        session_rows["s-conv-only"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == ""
+    )
+    assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
+        "content"
+    ]["parts"] == [{"text": "Fast-path answer."}]
 
 
 # ==============================================================================
