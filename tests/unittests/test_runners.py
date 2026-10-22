@@ -3209,6 +3209,102 @@ async def test_runner_delegation_closes_active_task_scope_on_terminal_results(
 
 
 @pytest.mark.asyncio
+async def test_runner_abort_closes_only_its_own_invocation_in_scope():
+  """An abort in a later invocation does not close an earlier one."""
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  session.events.extend([
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="shared_scope",
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Waiting for confirmation")],
+          ),
+      ),
+      Event(
+          author="task_agent",
+          invocation_id="inv-2",
+          isolation_scope="shared_scope",
+          error_code="INVOCATION_ABORTED",
+          error_message="Invocation was aborted by client.",
+      ),
+  ])
+
+  assert runners._find_active_task_scope(session) == (
+      "shared_scope",
+      "inv-1",
+  )
+
+
+@pytest.mark.asyncio
+async def test_runner_reopens_finish_task_scope_on_later_invocation():
+  """A finish_task-closed scope opens a fresh run on a later invocation."""
+  intake = LlmAgent(
+      name="intake",
+      mode="task",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name=FINISH_TASK_TOOL_NAME,
+                  args={"result": "Booked Tokyo hotel"},
+              ),
+              "Which Paris hotel?",
+              types.Part.from_function_call(
+                  name=FINISH_TASK_TOOL_NAME,
+                  args={"result": "Booked Paris Ritz"},
+              ),
+          ]
+      ),
+  )
+  wf = Workflow(name="wf", edges=[(START, intake)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_reopen_finish_task_scope", root_agent=wf)
+  )
+
+  inv1_events = await runner.run_async(
+      testing_utils.UserContent("Book hotel in Tokyo")
+  )
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  assert runners._find_active_task_scope(session) is None
+
+  inv2_events = await runner.run_async(
+      testing_utils.UserContent("Book hotel in Paris")
+  )
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  inv2_id = inv2_events[0].invocation_id
+  assert inv2_id != inv1_events[0].invocation_id
+  assert runners._find_active_task_scope(session) == (
+      "wf@1/intake@1",
+      inv2_id,
+  )
+
+  followup_events = await runner.run_async(testing_utils.UserContent("Ritz"))
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  assert followup_events[0].invocation_id == inv2_id
+  assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
 async def test_runner_picks_coordinator_when_has_remote_a2a_task_subagent():
   """Runner runs coordinator, not sub-agent, when RemoteA2aAgent is in task mode."""
   session_service = InMemorySessionService()
