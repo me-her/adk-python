@@ -3276,8 +3276,8 @@ class BatchProcessor:
       ``queue_full``: the in-memory queue was full when the event arrived.
       ``arrow_prep_failed``: the batch could not be serialized to Arrow.
       ``retry_exhausted``: the write failed after exhausting all retries.
-      ``non_retryable``: BigQuery returned a non-retryable error (e.g. a
-        schema mismatch).
+      ``non_retryable``: BigQuery rejected the write with a non-retryable
+        error (e.g. a schema mismatch).
       ``unexpected_error``: an unexpected exception aborted the write.
       ``shutdown_timeout``: rows still queued when shutdown timed out.
       ``shutdown_cancelled``: rows still queued when shutdown was
@@ -3688,6 +3688,9 @@ class BatchProcessor:
                     "%d row(s) dropped due to a non-retryable BigQuery error.",
                     len(rows),
                 )
+              # In-band row rejections leave the stream usable; only RPC-level
+              # InvalidArgument/FailedPrecondition below can mean a finalized,
+              # expired, or in-use stream.
               if self.exactly_once_delivery and had_ambiguous_send:
                 self._desync_stream()
               self._record_drop("non_retryable", len(rows))
@@ -3778,6 +3781,49 @@ class BatchProcessor:
         )
         await asyncio.sleep(sleep_time)
         delay *= self.retry_config.multiplier
+      except (
+          api_exceptions.Unauthenticated,
+          api_exceptions.InvalidArgument,
+          api_exceptions.FailedPrecondition,
+      ) as e:
+        # BigQuery rejected the append outright, so no rows were written and a
+        # retry cannot succeed. Forbidden/PermissionDenied is handled above
+        # under permission_denied.
+        error_message = str(e)
+        is_schema_mismatch = "schema mismatch" in error_message.lower()
+        if is_schema_mismatch:
+          logger.error(
+              "BigQuery Schema Mismatch: %s. This usually means the"
+              " table schema does not match the expected schema.",
+              e,
+          )
+        else:
+          logger.error("Non-retryable BigQuery error: %s", e)
+          logger.error(
+              "%d row(s) dropped due to a non-retryable BigQuery error.",
+              len(rows),
+          )
+        # Unauthenticated and "schema mismatch" rejections leave the committed
+        # stream usable, so only an earlier ambiguous attempt desyncs it. Other
+        # RPC-level InvalidArgument and FailedPrecondition errors can mean a
+        # finalized, expired, or in-use stream, so they always desync a
+        # committed stream to rotate onto a fresh one for the next batch.
+        if self.exactly_once_delivery and (
+            had_ambiguous_send
+            or (
+                isinstance(
+                    e,
+                    (
+                        api_exceptions.InvalidArgument,
+                        api_exceptions.FailedPrecondition,
+                    ),
+                )
+                and not is_schema_mismatch
+            )
+        ):
+          self._desync_stream()
+        self._record_drop("non_retryable", len(rows))
+        return
       except Exception as e:
         total_dropped = self._record_drop("unexpected_error", len(rows))
         if request_sent and not definitive_rejection:
