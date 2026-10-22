@@ -700,8 +700,10 @@ class RemoteA2aAgent(BaseAgent):
   containing a ``result`` key matching ``"Task completed."`` for success, or
   ``"Task failed."`` for failure). Additionally, the client's ``output_schema``
   must be set to mirror the remote agent's output schema to ensure correct
-  output unwrapping. ``None`` (default) leaves the agent as a plain
-  ``transfer_to_agent`` target.
+  output unwrapping. When the remote task fails, is canceled, or cannot be
+  reached, the parent's delegating call receives ``{"error": message}`` and
+  control returns to the parent. ``None`` (default) leaves the agent as a
+  plain ``transfer_to_agent`` target.
   """
 
   def __init__(
@@ -2213,6 +2215,11 @@ class RemoteA2aAgent(BaseAgent):
     ``ValueError`` on a second assignment), so promotion is gated to
     the first terminal A2A event of the run. Non-final task states and
     later events are passed through untouched.
+
+    In task mode, a task that fails sets the output to
+    ``{"error": message}``, so the parent's delegating call gets a response.
+    It is set on ``ctx`` rather than yielded, because a failure is not a
+    result and must not be validated against ``output_schema``.
     """
     promoted = False
     async with Aclosing(
@@ -2225,6 +2232,12 @@ class RemoteA2aAgent(BaseAgent):
             and self._promote_response_to_output(event, ctx.node_path)
         ):
           promoted = True
+        if (
+            self.mode == "task"
+            and event.error_message
+            and is_finish_task_terminal_fr(event)
+        ):
+          ctx.output = {"error": event.error_message}
         yield event
 
   def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
