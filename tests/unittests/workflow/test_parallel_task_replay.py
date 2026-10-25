@@ -23,6 +23,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._isolation_scope import _find_finished_scope_runs
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
@@ -40,6 +41,216 @@ from google.genai import types
 import pytest
 
 from . import testing_utils
+
+
+@pytest.mark.parametrize(
+    'scope,path,invocation_id,owners,public_owner,expected_closed',
+    [
+        ('team@1/loser@1', 'team@1/loser@1', 'run', [], None, True),
+        (
+            'foreign@1/task@1',
+            'foreign@1/task@1',
+            'run',
+            ['team@1/loser@1'],
+            None,
+            True,
+        ),
+        ('team@1', 'team@1/loser@1', 'run', ['team@1/loser@1'], None, False),
+        (
+            'team@1/sibling@1',
+            'team@1/sibling@1',
+            'run',
+            ['team@1/sibling@1'],
+            None,
+            False,
+        ),
+        (
+            'team@1/loser@1',
+            'team@1/loser@1',
+            'next',
+            ['team@1/loser@1'],
+            None,
+            False,
+        ),
+        (
+            'foreign@1/task@1',
+            'foreign@1/task@1',
+            'run',
+            [],
+            'team@1/loser@1',
+            False,
+        ),
+    ],
+)
+def test_parallel_cancellation_closes_only_owned_isolation_scopes(
+    scope, path, invocation_id, owners, public_owner, expected_closed
+):
+  """Cancellation cannot close inherited, sibling, or later-invocation scopes."""
+  scoped = Event(
+      author='worker',
+      invocation_id=invocation_id,
+      isolation_scope=scope,
+      node_info=NodeInfo(path=path),
+      content=types.Content(role='model', parts=[types.Part(text='working')]),
+      custom_metadata={
+          '__adk_internal_parallel_task_owners': owners,
+          'parallel_task': {'task_id': public_owner, 'status': 'cancelled'},
+      },
+  )
+  cancellation = Event(
+      author='coordinator',
+      invocation_id='run',
+      custom_metadata={
+          '__adk_internal_parallel_tasks': {
+              'group': 'team@1/parallel@1',
+              'cancelled': ['team@1/loser@1'],
+          }
+      },
+  )
+  # Cancellation is a persisted decision; ownership without that decision does
+  # not turn ordinary parent cleanup into a deliberate cancellation.
+  assert _find_finished_scope_runs([scoped]) == set()
+  expected = {(scope, invocation_id)} if expected_closed else set()
+  assert _find_finished_scope_runs([scoped, cancellation]) == expected
+
+
+def test_parallel_cancellation_closes_delegated_task_scope_by_opening_call():
+  """Opaque task scopes follow the cancelled owner that opened their call."""
+  opening = Event(
+      author='worker',
+      invocation_id='run',
+      isolation_scope='team@1',
+      node_info=NodeInfo(path='team@1/loser@1'),
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id='delegation', name='task_agent', args={}
+                  )
+              )
+          ],
+      ),
+  )
+  delegated = Event(
+      author='task_agent',
+      invocation_id='run',
+      isolation_scope='delegation',
+      node_info=NodeInfo(path='team@1/task_agent@1'),
+      content=types.Content(role='model', parts=[types.Part(text='working')]),
+  )
+  cancellation = Event(
+      author='coordinator',
+      invocation_id='run',
+      custom_metadata={
+          '__adk_internal_parallel_tasks': {'cancelled': ['team@1/loser@1']}
+      },
+  )
+  assert _find_finished_scope_runs([opening, delegated, cancellation]) == {
+      ('delegation', 'run')
+  }
+
+
+@pytest.mark.parametrize(
+    'finish_reason,error_code',
+    [
+        (types.FinishReason.MAX_TOKENS, 'MAX_TOKENS'),
+        (None, types.BlockedReason.SAFETY.value),
+    ],
+)
+def test_parallel_cancellation_preserves_sibling_model_termination_semantics(
+    finish_reason, error_code
+):
+  """A sibling's model termination is not an unhandled execution failure."""
+  sibling = Event(
+      author='sibling',
+      invocation_id='run',
+      isolation_scope='team@1/sibling@1',
+      node_info=NodeInfo(path='team@1/sibling@1'),
+      finish_reason=finish_reason,
+      error_code=error_code,
+  )
+  cancellation = Event(
+      author='coordinator',
+      invocation_id='run',
+      custom_metadata={
+          '__adk_internal_parallel_tasks': {'cancelled': ['team@1/loser@1']}
+      },
+  )
+  assert _find_finished_scope_runs([sibling, cancellation]) == set()
+  sibling.output = 'done'
+  assert _find_finished_scope_runs([sibling, cancellation]) == {
+      ('team@1/sibling@1', 'run')
+  }
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_cancelled_task_agent_does_not_capture_next_user_turn(
+    is_resumable: bool,
+):
+  """A deliberately cancelled task-mode loser cannot retain its task scope."""
+  started = asyncio.Queue()
+  closed = []
+
+  async def blocking_tool() -> str:
+    """Wait until this candidate is cancelled."""
+    started.put_nowait(None)
+    try:
+      await asyncio.Event().wait()
+    finally:
+      closed.append('closed')
+
+  model = testing_utils.MockModel.create([
+      types.Part.from_function_call(name='blocking_tool', args={}),
+      types.Part.from_function_call(name='blocking_tool', args={}),
+  ])
+  loser_agent = LlmAgent(
+      name='loser', mode='task', model=model, tools=[blocking_tool]
+  )
+
+  async def accepted(node_input: str) -> str:
+    await started.get()
+    return node_input
+
+  @node(rerun_on_resume=True)
+  async def coordinate(ctx: Context, node_input: str) -> str:
+    async with ctx.parallel_tasks() as group:
+      loser = group.spawn(loser_agent, node_input)
+      group.spawn(accepted, node_input)
+      winner = await group.first()
+      assert loser.status == 'cancelled'
+      return winner.output
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='cancelled_task_scope',
+          root_agent=Workflow(name='team', edges=[(START, coordinate)]),
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+  try:
+    first = await asyncio.wait_for(runner.run_async('first turn'), 3)
+    assert any(event.output == 'first turn' for event in first)
+    second = await asyncio.wait_for(runner.run_async('second turn'), 3)
+    assert any(event.output == 'second turn' for event in second)
+    assert first[0].invocation_id != second[0].invocation_id
+    user_turns = [
+        event
+        for event in runner.session.events
+        if event.author == 'user'
+        and event.content
+        and event.content.parts
+        and any(
+            part.text in ('first turn', 'second turn')
+            for part in event.content.parts
+        )
+    ]
+    assert len(user_turns) == 2
+    assert all(event.isolation_scope is None for event in user_turns)
+    assert len(model.requests) == 2
+    assert closed == ['closed', 'closed']
+  finally:
+    await runner.runner.close()
 
 
 @pytest.mark.parametrize('is_resumable', [False, True])

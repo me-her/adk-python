@@ -68,6 +68,8 @@ class FeatureName(str, Enum):
   # Off by default since it changes wire behavior. Enable with
   # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
   _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
+  MONGODB_MEMORY_SERVICE = "MONGODB_MEMORY_SERVICE"
+  MONGODB_SESSION_SERVICE = "MONGODB_SESSION_SERVICE"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -79,6 +81,7 @@ class FeatureName(str, Enum):
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  TOOL_ARGS_MATCHER = "TOOL_ARGS_MATCHER"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
   PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
@@ -218,6 +221,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
     ),
+    FeatureName.MONGODB_MEMORY_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.MONGODB_SESSION_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -249,6 +258,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.TOOL_ARGS_MATCHER: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.TOOL_CONFIG: FeatureConfig(

@@ -110,8 +110,8 @@ async def send_to_model(
         if active.input_stream is not None
     ]
     logger.debug(
-        'Sending live request %s to %d active stream(s)',
-        live_request,
+        'Sending live request with fields %s to %d active stream(s)',
+        sorted(live_request.model_fields_set),
         len(active_streams),
     )
     for stream in active_streams:
@@ -636,12 +636,14 @@ async def run_live_flow(
                 # Empty event means the queue is closed.
                 if not event:
                   break
-                logger.debug('Receive new event: %s', event)
+                logger.debug(
+                    'Receive new event: %s, author: %s', event.id, event.author
+                )
                 yield event
                 # send back the function response to models
                 if event.get_function_responses():
                   logger.debug(
-                      'Sending back last function response event: %s', event
+                      'Sending back last function response event: %s', event.id
                   )
                   if event.content is None:
                     raise RuntimeError(

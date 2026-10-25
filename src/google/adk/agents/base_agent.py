@@ -389,16 +389,17 @@ class BaseAgent(BaseNode, abc.ABC):
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
     """Runs the agent as a node."""
-    async for event in self.run_async(
-        parent_context=ctx.get_invocation_context()
-    ):
-      # Preserve author by setting it in context for NodeRunner
-      if event.author:
-        ctx.event_author = event.author
+    async with Aclosing(
+        self.run_async(parent_context=ctx.get_invocation_context())
+    ) as agen:
+      async for event in agen:
+        # Preserve author by setting it in context for NodeRunner
+        if event.author:
+          ctx.event_author = event.author
 
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   @final
   async def run_live(
@@ -609,8 +610,14 @@ class BaseAgent(BaseNode, abc.ABC):
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
     if not callback_content and callbacks:
+      # _run_callbacks passes callback_context positionally when needed.
+      adaptable_callbacks: list[
+          Callable[
+              ..., Awaitable[Optional[types.Content]] | Optional[types.Content]
+          ]
+      ] = callbacks
       callback_content = await _run_callbacks(
-          callbacks,
+          adaptable_callbacks,
           _stop_on_truthy,
           callback_context=callback_context,
       )

@@ -258,23 +258,29 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
     def refresh(self, request: google.auth.transport.Request) -> None:
       self.token = "dummy-token"
 
-  monkeypatch.setattr(
-      google.auth,
-      "default",
-      lambda *args, **kwargs: (
-          _DummyCredentials(),
-          "dummy-project",
-      ),
-  )
+  def _dummy_default(
+      *args: object, **kwargs: object
+  ) -> tuple[_DummyCredentials, str]:
+    return _DummyCredentials(), "dummy-project"
+
+  real_default = google.auth.default
+  monkeypatch.setattr(google.auth, "default", _dummy_default)
   # Integration tests may already have imported these module-level aliases.
   # Import them before patching google.auth.default so monkeypatch also restores
   # the original aliases when this test was their first importer.
   monkeypatch.setattr(
-      parameter_client, "default_service_credential", google.auth.default
+      parameter_client, "default_service_credential", _dummy_default
   )
   monkeypatch.setattr(
-      secret_client, "default_service_credential", google.auth.default
+      secret_client, "default_service_credential", _dummy_default
   )
+  # Modules that ran `from google.auth import default` before this test hold
+  # their own reference to the real function.
+  for module_name, module in list(sys.modules.items()):
+    if module_name.startswith("google.adk."):
+      for attr, value in list(getattr(module, "__dict__", {}).items()):
+        if value is real_default:
+          monkeypatch.setattr(module, attr, _dummy_default)
   monkeypatch.setattr(
       mtls,
       "has_default_client_cert_source",

@@ -98,9 +98,11 @@ sequenceDiagram
 3. **Execution & Event Streaming:** The runner executes the root agent generator. Generated `Event` instances pass through `PluginManager.run_on_event_callback()` before being yielded to the caller. If `abort_signal` is set during execution, the runner cancels active tasks, emits an `INVOCATION_ABORTED` event, and seals any pending tool calls.
 4. **Session Persistence & Compaction:** Each non-partial event is appended to
    `session_service` before it is yielded to the caller; partial streaming
-   chunks (`event.partial=True`) are yielded without being persisted. If
-   `events_compaction_config` is set on `App`, event compaction runs after the
-   last event is yielded before the generator finishes.
+   chunks (`event.partial=True`) are yielded without being persisted. If the
+   invocation's `events_compaction_config` is set, event compaction runs after
+   the last event is yielded before the generator finishes. It starts as the
+   one on `App`, and a plugin's `before_run_callback` can replace it or set it
+   to `None`.
 
 ## Configuration options
 
@@ -211,5 +213,6 @@ closes registered plugins within `plugin_close_timeout`, and flushes
 *   [App Container](../../apps/app/index.md) — Guide on `App` configuration, plugins, and cross-cutting features.
 *   [Runner Execution Cancellation](abort.md) — Guide on halting agent and workflow execution cleanly using abort signals.
 *   [Runner Live Streaming](live.md) — Guide on real-time bidirectional streaming with `run_live` and `LiveRequestQueue`.
+*   [Runner Rewind](rewind.md) covers `rewind_async`, which rewinds a session to the point before a given invocation and reverts the state and artifact changes made after it.
 *   [Session and BaseSessionService](../../sessions/session/index.md) — Guide on session storage backends and state scoping.
 *   [Agent-to-Agent Sample](../../../../contributing/samples/a2a/a2a_basic/agent.py) — Multi-agent application executed via `Runner`.

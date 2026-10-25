@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import copy
 import json
 from pathlib import Path
+import ssl
 import tempfile
 import threading
 from typing import Literal
@@ -58,6 +60,8 @@ from google.adk.a2a.converters import event_converter
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
@@ -74,7 +78,10 @@ from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.adk.utils import _mtls_utils
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel
@@ -438,6 +445,113 @@ class TestRemoteA2aAgentResolution:
           _compat.TransportProtocol.http_json,
       ]
     # 1.x uses supported_protocol_bindings instead.
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://us-aiplatform.googleapis.com/v1/agent.json",
+          create_test_agent_card(
+              url="https://us-aiplatform.googleapis.com/v1/rpc"
+          ),
+      ],
+      ids=["url_source", "card"],
+  )
+  async def test_ensure_httpx_client_presents_client_cert(self, agent_card):
+    """For a Google API agent the default client presents the client cert."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+    client_cert_ctx = ssl.create_default_context()
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=client_cert_ctx,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == [
+          _mtls_utils._route_googleapis_request_to_mtls
+      ]
+      assert client._transport._pool._ssl_context is client_cert_ctx
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://example.com/agent.json",
+          create_test_agent_card(url="https://example.com/rpc"),
+          _make_multi_interface_card([
+              ("https://us-aiplatform.googleapis.com/v1/rpc", "JSONRPC"),
+              ("https://example.com/rpc", "JSONRPC"),
+          ]),
+      ],
+      ids=["url_source", "card", "card_with_off_google_interface"],
+  )
+  async def test_ensure_httpx_client_skips_client_cert_for_other_hosts(
+      self, agent_card
+  ):
+    """The client cert is never loaded for an agent off *.googleapis.com."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+
+    with patch.object(
+        _mtls_utils, "_client_cert_ssl_context", autospec=True
+    ) as mock_ssl_context:
+      client = await agent._ensure_httpx_client()
+
+    try:
+      mock_ssl_context.assert_not_called()
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_without_client_cert(self):
+    """Without a client cert the default client keeps httpx defaults."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(
+            url="https://us-aiplatform.googleapis.com/v1/rpc"
+        ),
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_concurrent_callers_share_one_client(self):
+    """Callers racing to create the default client all get the same one."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card=create_test_agent_card()
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      clients = await asyncio.gather(
+          *(agent._ensure_httpx_client() for _ in range(5))
+      )
+
+    try:
+      assert all(client is clients[0] for client in clients)
+    finally:
+      await agent.cleanup()
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):
@@ -1161,6 +1275,41 @@ class TestRemoteA2aAgentResolution:
     await agent._validate_agent_card(
         create_test_agent_card(url="https://example.com/rpc")
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "source, rpc_url",
+      [
+          (
+              "https://us-aiplatform.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.mtls.googleapis.com/v1/rpc",
+          ),
+          (
+              "https://us-aiplatform.mtls.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.googleapis.com/v1/rpc",
+          ),
+      ],
+  )
+  async def test_validate_agent_card_treats_mtls_googleapis_host_as_same_origin(
+      self, source, rpc_url
+  ):
+    """A Google API card may name the mTLS or plain host of its source."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=source)
+
+    await agent._validate_agent_card(create_test_agent_card(url=rpc_url))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_other_mtls_googleapis_host(self):
+    """The mTLS carve-out does not admit a different Google API host."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://us-aiplatform.googleapis.com/v1/agent.json",
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="same origin"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="https://other.mtls.googleapis.com/rpc")
+      )
 
   @pytest.mark.asyncio
   async def test_validate_agent_card_rejects_cross_origin_rpc_url(self):
@@ -2152,6 +2301,106 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_failed_task_sets_error(self):
+    """Test non-streaming failed A2A task maps to an error event."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Remote agent task failed")],
+        ),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+    assert result is not None
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_failed_task_preserves_error_code(self):
+    """Test non-streaming failed A2A task preserves custom error code."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        error_code="MAX_TOKENS",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Token limit reached")],
+        ),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+    assert result is not None
+    assert result.error_code == "MAX_TOKENS"
+    assert result.error_message == "Token limit reached"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_failed_task_with_content_none_parts(self):
+    """Test failed A2A task with content but None parts does not crash."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=None),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+    assert result is not None
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+
   def test_construct_message_parts_from_session_preserves_order(self):
     """Test that message parts are in correct order with multi-part messages.
 
@@ -2527,6 +2776,27 @@ class TestRemoteA2aAgentMessageHandling:
     assert result.content is None
     assert result.is_final_response()
     assert result.custom_metadata["a2a:task_id"] == "task-123"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_failed_status_update_without_message(self):
+    """Test failed streaming status without a message still emits an error."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(spec=A2ATaskStatus)
+    mock_update.status.state = _compat.TS_FAILED
+    mock_update.status.message = None
+
+    result = await self.agent._handle_a2a_response(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is None
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_filters_thought_parts_from_completed_task(
@@ -4076,6 +4346,34 @@ class TestRemoteA2aAgentMessageHandlingV2:
     )
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_failed_task_sets_error(self):
+    """Test v2 non-streaming failed task maps to an error event."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = None
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Remote agent task failed")],
+        ),
+    )
+    self.mock_config.a2a_task_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, None), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_impl_with_task_status_update(self):
     """Test _handle_a2a_response_impl with TaskStatusUpdateEvent."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -4106,6 +4404,30 @@ class TestRemoteA2aAgentMessageHandlingV2:
     assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
     assert result.custom_metadata[A2A_METADATA_PREFIX + "task_id"] == "task-123"
     assert A2A_METADATA_PREFIX + "context_id" not in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_failed_status_update_returns_error(
+      self,
+  ):
+    """Test v2 failed status update returns error even if converter is None."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = None
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(spec=A2ATaskStatus)
+    mock_update.status.state = _compat.TS_FAILED
+
+    self.mock_config.a2a_status_update_converter.return_value = None
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is None
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_impl_with_task_artifact_update(self):
@@ -7140,6 +7462,43 @@ class TestRemoteA2aAgentWorkflowOutput:
     ]
     assert join_outputs
     assert join_outputs[0].output == {"remote_agent": "Simulated error"}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_early_close_closes_super_run_impl(self):
+    """Closing RemoteA2aAgent._run_impl early closes super()._run_impl."""
+    cleaned_up = False
+    first_event = self._make_text_event(text="first", task_state="working")
+    second_event = self._make_text_event(text="second", task_state="completed")
+
+    class _CleanupRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        nonlocal cleaned_up
+        try:
+          yield first_event
+          yield second_event
+        finally:
+          await asyncio.sleep(0)
+          cleaned_up = True
+
+    agent = _CleanupRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+    session = Session(app_name="test_app", user_id="user", id="session")
+    parent_ctx = InvocationContext(
+        invocation_id="inv",
+        session=session,
+        session_service=Mock(spec=BaseSessionService),
+        agent=agent,
+    )
+    ctx = Context(parent_ctx, node=agent)
+
+    async with Aclosing(agent.run(ctx=ctx, node_input=None)) as agen:
+      event = await anext(agen)
+      assert event is first_event
+
+    assert cleaned_up
 
 
 # ---------------------------------------------------------------------------

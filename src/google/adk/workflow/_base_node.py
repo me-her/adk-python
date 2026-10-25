@@ -92,12 +92,23 @@ class BaseNode(BaseModel, abc.ABC):
   """Configuration for retrying the node on failure.
 
   If set, failures of the node will trigger retries according to the
-  specified policy.
+  specified policy. A retry after the node's own error runs it again in
+  full, including the children it started with ``ctx.run_node()``. A retry
+  after one of those children failed replays the children that the failed
+  attempt had completed, at any depth below the node, instead of running
+  them again.
 
   On a ``Workflow``, a failure of any node inside it is a failure of the
   workflow, so the whole sub-workflow is retried. Children that already
   produced an output or a state change are replayed rather than run again;
   a child that produced neither leaves nothing to replay and runs again.
+
+  On a parallel worker (``parallel_worker=True``), the policy applies to each
+  item: a failed item is retried in place while the other items keep
+  running, and the worker itself is not retried for an item's failure. The
+  policy does not cover a failure of the worker as a whole, such as its
+  ``timeout``, except on a ``Node`` subclass with ``parallel_worker=True``,
+  which keeps the policy on the worker as well.
 
   ``None`` means the node is not retried (the default).
   """
